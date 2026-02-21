@@ -6,6 +6,7 @@
 const mysql = require('mysql2/promise');
 
 const MYSQL_HOST = process.env.MYSQL_HOST || 'localhost';
+const MYSQL_PORT = parseInt(process.env.MYSQL_PORT || '3306', 10);
 const MYSQL_USER = process.env.MYSQL_USER || 'root';
 const MYSQL_PASSWORD = process.env.MYSQL_PASSWORD || '';
 const MYSQL_DATABASE = process.env.MYSQL_DATABASE || 'syriatel_api';
@@ -35,6 +36,7 @@ const PENDING_OTP_COLUMNS = [
 async function getPool(useDb = true) {
   const config = {
     host: MYSQL_HOST,
+    port: MYSQL_PORT,
     user: MYSQL_USER,
     password: MYSQL_PASSWORD,
     waitForConnections: true,
