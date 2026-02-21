@@ -1,0 +1,22 @@
+{
+  "name": "syriatel-cash-api",
+  "version": "1.0.0",
+  "description": "Node API wrapper for Syriatel Cash: sign-in, balance, history, transfer (GET-only)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "verify-hashes": "node scripts/verify-all-hashes.js",
+    "e2e": "node scripts/e2e-login.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "express": "^4.21.0",
+    "mysql2": "^3.6.5",
+    "node-fetch": "^2.7.0",
+    "socks-proxy-agent": "^8.0.5"
+  }
+}
