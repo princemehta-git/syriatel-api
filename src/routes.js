@@ -373,15 +373,16 @@ async function transfer(req, res) {
     acc.device
   );
   console.log('[Transfer] transfer API response', { code: result.code, message: result.message, data: result.data });
-  if (result.code !== '1') {
+  const transferSuccess = result && (result.code === '1' || result.code === 1);
+  if (!transferSuccess) {
     console.log('[Transfer] transfer failed');
     return res.status(200).json({
       success: false,
-      code: result.code,
-      message: result.message
+      code: result?.code,
+      message: result?.message
     });
   }
-  console.log('[Transfer] transfer returned code 1 – full result above (if money not received, check Syriatel response data)');
+  // Success: stop and reply immediately – no further payment attempts.
   return res.status(200).json({
     success: true,
     message: result.message || 'Transfer done'

@@ -348,7 +348,8 @@ async function checkCustomer(userId, userKey, customerCodeOrGSM, transactAmount,
         hash
       };
       lastResult = await postCashForm('/ePayment/checkCustomer', params, device);
-      if (lastResult && lastResult.code === '1') return lastResult;
+      // Stop immediately on success – do not retry.
+      if (lastResult && (lastResult.code === '1' || lastResult.code === 1)) return lastResult;
       console.log('[checkCustomer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– code', lastResult?.code, lastResult?.message || '');
     } catch (err) {
       lastResult = { code: '-1', message: err.message || String(err) };
@@ -386,7 +387,8 @@ async function transfer(userId, userKey, pinCode, secretCodeOrGSM, toGSM, amount
         hash
       };
       lastResult = await postCashForm('/ePayment/transfer', params, device);
-      if (lastResult && lastResult.code === '1') return lastResult;
+      // Stop immediately on success – do not retry; one successful payment only.
+      if (lastResult && (lastResult.code === '1' || lastResult.code === 1)) return lastResult;
       console.log('[transfer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– code', lastResult?.code, lastResult?.message || '');
     } catch (err) {
       lastResult = { code: '-1', message: err.message || String(err) };
