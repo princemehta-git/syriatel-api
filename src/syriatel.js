@@ -69,6 +69,9 @@ const BASE_CASH = 'https://cash-api.syriatel.sy/Wrapper/app/7/SS2MTLGSM';
 
 const MAX_RETRIES = 30;
 
+/** Max attempts for checkCustomer and transfer (retry with proxy until success or this many attempts). From .env PAYMENT_RETRY_ATTEMPTS. */
+const PAYMENT_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.PAYMENT_RETRY_ATTEMPTS, 10) || 5);
+
 function formatFetchError(err, url) {
   const cause = err.cause ? (err.cause.message || String(err.cause)) : '';
   const code = err.cause && err.cause.code ? err.cause.code : '';
@@ -324,29 +327,33 @@ async function pinCodeCheck(userId, userKey, pinCode, device) {
 /**
  * Check customer/recipient before transfer; returns fee and billcode.
  * APK: m12340I0 c2 [userKey, userId, customerCodeOrGSM, transactAmount, salt].
+ * Retries up to PAYMENT_RETRY_ATTEMPTS (from .env); each attempt uses direct then proxy fallback.
  */
 async function checkCustomer(userId, userKey, customerCodeOrGSM, transactAmount, device) {
   const endpointKey = 'checkCustomer';
-  const maxAttempts = useHashRetry(endpointKey) ? HASH_RETRY_ATTEMPTS : 1;
   let lastResult;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const hash = await getHash('c2', userKey, [userId, customerCodeOrGSM, transactAmount], device, endpointKey, attempt);
-    const params = {
-      appVersion: device.appVersion,
-      mobileManufaturer: device.mobileManufaturer,
-      mobileModel: device.mobileModel,
-      lang: device.lang,
-      customerCodeOrGSM,
-      systemVersion: device.systemVersion,
-      deviceId: device.deviceId,
-      userId,
-      transactAmount,
-      hash
-    };
-    lastResult = await postCashForm('/ePayment/checkCustomer', params, device);
-    if (lastResult.code === '1') return lastResult;
-    if (lastResult.code === '-15000') continue;
-    return lastResult;
+  for (let attempt = 1; attempt <= PAYMENT_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const hash = await getHash('c2', userKey, [userId, customerCodeOrGSM, transactAmount], device, endpointKey, 0);
+      const params = {
+        appVersion: device.appVersion,
+        mobileManufaturer: device.mobileManufaturer,
+        mobileModel: device.mobileModel,
+        lang: device.lang,
+        customerCodeOrGSM,
+        systemVersion: device.systemVersion,
+        deviceId: device.deviceId,
+        userId,
+        transactAmount,
+        hash
+      };
+      lastResult = await postCashForm('/ePayment/checkCustomer', params, device);
+      if (lastResult && lastResult.code === '1') return lastResult;
+      console.log('[checkCustomer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– code', lastResult?.code, lastResult?.message || '');
+    } catch (err) {
+      lastResult = { code: '-1', message: err.message || String(err) };
+      console.log('[checkCustomer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– error', err.message || err);
+    }
   }
   return lastResult;
 }
@@ -354,33 +361,37 @@ async function checkCustomer(userId, userKey, customerCodeOrGSM, transactAmount,
 /**
  * Transfer to customer (GSM or secret code). Requires pinCode and billcode from checkCustomer.
  * APK: m12504e6 c2 [userKey, userId, pinCode, secretCodeOrGSM, toGSM, fee, billcode, amount] (7 params; no feeOnMerchant in hash).
+ * Retries up to PAYMENT_RETRY_ATTEMPTS (from .env); each attempt uses direct then proxy fallback.
  */
 async function transfer(userId, userKey, pinCode, secretCodeOrGSM, toGSM, amount, fee, billcode, device) {
   const endpointKey = 'transfer';
-  const maxAttempts = useHashRetry(endpointKey) ? HASH_RETRY_ATTEMPTS : 1;
   let lastResult;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const hash = await getHash('c2', userKey, [userId, pinCode, secretCodeOrGSM, toGSM, String(fee), billcode, String(amount)], device, endpointKey, attempt);
-    const params = {
-      appVersion: device.appVersion,
-      amount: String(amount),
-      fee: String(fee),
-      systemVersion: device.systemVersion,
-      deviceId: device.deviceId,
-      userId,
-      toGSM,
-      mobileManufaturer: device.mobileManufaturer,
-      mobileModel: device.mobileModel,
-      pinCode,
-      billcode,
-      lang: device.lang,
-      secretCodeOrGSM,
-      hash
-    };
-    lastResult = await postCashForm('/ePayment/transfer', params, device);
-    if (lastResult.code === '1') return lastResult;
-    if (lastResult.code === '-15000') continue;
-    return lastResult;
+  for (let attempt = 1; attempt <= PAYMENT_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const hash = await getHash('c2', userKey, [userId, pinCode, secretCodeOrGSM, toGSM, String(fee), billcode, String(amount)], device, endpointKey, 0);
+      const params = {
+        appVersion: device.appVersion,
+        amount: String(amount),
+        fee: String(fee),
+        systemVersion: device.systemVersion,
+        deviceId: device.deviceId,
+        userId,
+        toGSM,
+        mobileManufaturer: device.mobileManufaturer,
+        mobileModel: device.mobileModel,
+        pinCode,
+        billcode,
+        lang: device.lang,
+        secretCodeOrGSM,
+        hash
+      };
+      lastResult = await postCashForm('/ePayment/transfer', params, device);
+      if (lastResult && lastResult.code === '1') return lastResult;
+      console.log('[transfer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– code', lastResult?.code, lastResult?.message || '');
+    } catch (err) {
+      lastResult = { code: '-1', message: err.message || String(err) };
+      console.log('[transfer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– error', err.message || err);
+    }
   }
   return lastResult;
 }
