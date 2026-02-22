@@ -31,28 +31,28 @@ app.get('/historyTypes', routes.historyTypes);
 app.get('/usage', routes.usage);
 app.get('/secretCode', routes.secretCode);
 
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Syriatel Cash API',
-    version: '1.0.0',
-    endpoints: [
-      'GET /signin?gsm=...&password=...  → returns apiKey; attach to all later calls',
-      'GET /otp?apiKey=...&code=...',
-      'GET /resendOtp?apiKey=...',
-      'GET /balance?apiKey=...  (optional &gsm= for specific line)',
-      'GET /history?apiKey=...&page=1  (optional &gsm= for specific line)',
-      'GET /transaction?apiKey=...&transactionId=...  (optional &gsm=)',
-      'GET /transfer?apiKey=...&pin=...&to=...&amount=...  (optional &from=userId|gsm)',
-      'GET /gsms?apiKey=...',
-      'GET /accounts',
-      'GET /checkGsm?gsm=...',
-      'GET /accountInfo?apiKey=...  (optional &gsm=)',
-      'GET /historyTypes?apiKey=...  (optional &gsm=)',
-      'GET /usage?apiKey=...  (optional &gsm=)',
-      'GET /secretCode?apiKey=...  (optional &gsm=)'
-    ]
-  });
-});
+// app.get('/', (req, res) => {
+//   res.json({
+//     name: 'Syriatel Cash API',
+//     version: '1.0.0',
+//     endpoints: [
+//       'GET /signin?gsm=...&password=...  → returns apiKey; attach to all later calls',
+//       'GET /otp?apiKey=...&code=...',
+//       'GET /resendOtp?apiKey=...',
+//       'GET /balance?apiKey=...  (optional &gsm= for specific line)',
+//       'GET /history?apiKey=...&page=1  (optional &gsm= for specific line)',
+//       'GET /transaction?apiKey=...&transactionId=...  (optional &gsm=)',
+//       'GET /transfer?apiKey=...&pin=...&to=...&amount=...  (optional &from=userId|gsm)',
+//       'GET /gsms?apiKey=...',
+//       'GET /accounts',
+//       'GET /checkGsm?gsm=...',
+//       'GET /accountInfo?apiKey=...  (optional &gsm=)',
+//       'GET /historyTypes?apiKey=...  (optional &gsm=)',
+//       'GET /usage?apiKey=...  (optional &gsm=)',
+//       'GET /secretCode?apiKey=...  (optional &gsm=)'
+//     ]
+//   });
+// });
 
 app.use((err, req, res, next) => {
   const isNetwork = err && (err.message === 'fetch failed' || (err.cause && (err.cause.code === 'ECONNRESET' || err.cause.code === 'ETIMEDOUT' || err.cause.code === 'ENOTFOUND')));
