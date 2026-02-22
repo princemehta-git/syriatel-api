@@ -5,7 +5,7 @@
  */
 
 const { hashC2WithMode, hashH2WithMode, hashE2 } = require('./hash');
-const { getUserAgent } = require('./device');
+const { getUserAgent, CAPTURED_DEVICE } = require('./device');
 const { CAPTURED_HASHES, CAPTURED_SETTOKEN_TOKEN } = require('./constants');
 const { fetchWithFallback } = require('./fetchWithFallback');
 
@@ -28,6 +28,18 @@ const CASH_ALWAYS_COMPUTE = new Set([
 ]);
 
 const HASH_RETRY_ATTEMPTS = 30;
+
+/**
+ * Ensure device is a plain object. When device comes from DB it may be a JSON string;
+ * spreading a string yields character keys ('0','1',...) and corrupts the payload.
+ */
+function ensureDeviceObject(device) {
+  if (device && typeof device === 'object' && !Array.isArray(device)) return device;
+  if (typeof device === 'string') {
+    try { return JSON.parse(device); } catch { /* fall through */ }
+  }
+  return { ...CAPTURED_DEVICE };
+}
 
 /**
  * Compute request hash. When USE_DYNAMIC_DEVICES is false, uses captured hash from constants.js.
@@ -171,6 +183,22 @@ async function postCashForm(path, params, device) {
   return res.json();
 }
 
+/**
+ * POST form to cash-api WITHOUT the 30x fetch-retry loop.
+ * Uses fetchWithFallback (direct + one proxy fallback) only.
+ * Must be used for non-idempotent payment operations (transfer) to avoid
+ * duplicate charges when the server processes the request but the response is lost.
+ */
+async function postCashFormOnce(path, params, device) {
+  const searchParams = new URLSearchParams(params).toString();
+  const res = await fetchWithFallback(`${BASE_CASH}${path}`, {
+    method: 'POST',
+    headers: formHeaders(device),
+    body: searchParams
+  });
+  return res.json();
+}
+
 // --- Auth ---
 
 /**
@@ -264,6 +292,7 @@ async function getUsage(userId, userKey, device) {
  * APK: h2 [userKey, userId, salt] (m12524h2).
  */
 async function refreshBalance(userId, userKey, device) {
+  device = ensureDeviceObject(device);
   const endpointKey = 'refresh_balance';
   const path = '/features/ePayment/refresh_balance';
   const url = `${BASE_CASH}${path}`;
@@ -327,7 +356,11 @@ async function pinCodeCheck(userId, userKey, pinCode, device) {
 /**
  * Check customer/recipient before transfer; returns fee and billcode.
  * APK: m12340I0 c2 [userKey, userId, customerCodeOrGSM, transactAmount, salt].
- * Retries up to PAYMENT_RETRY_ATTEMPTS (from .env); each attempt uses direct then proxy fallback.
+ *
+ * Retry policy: retry ONLY when there is no response or timeout.
+ * - code 1 = success → don't retry
+ * - any other JSON response = server replied (success or error) → don't retry
+ * - no response / timeout / network error → retry up to PAYMENT_RETRY_ATTEMPTS
  */
 async function checkCustomer(userId, userKey, customerCodeOrGSM, transactAmount, device) {
   const endpointKey = 'checkCustomer';
@@ -348,12 +381,11 @@ async function checkCustomer(userId, userKey, customerCodeOrGSM, transactAmount,
         hash
       };
       lastResult = await postCashForm('/ePayment/checkCustomer', params, device);
-      // Stop immediately on success – do not retry.
-      if (lastResult && (lastResult.code === '1' || lastResult.code === 1)) return lastResult;
-      console.log('[checkCustomer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– code', lastResult?.code, lastResult?.message || '');
+      // Any JSON response = definitive reply (code 1 or not), don't retry
+      return lastResult;
     } catch (err) {
       lastResult = { code: '-1', message: err.message || String(err) };
-      console.log('[checkCustomer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– error', err.message || err);
+      console.log('[checkCustomer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– no response/timeout, retrying:', err.message || err);
     }
   }
   return lastResult;
@@ -362,7 +394,13 @@ async function checkCustomer(userId, userKey, customerCodeOrGSM, transactAmount,
 /**
  * Transfer to customer (GSM or secret code). Requires pinCode and billcode from checkCustomer.
  * APK: m12504e6 c2 [userKey, userId, pinCode, secretCodeOrGSM, toGSM, fee, billcode, amount] (7 params; no feeOnMerchant in hash).
- * Retries up to PAYMENT_RETRY_ATTEMPTS (from .env); each attempt uses direct then proxy fallback.
+ * Retries up to PAYMENT_RETRY_ATTEMPTS (from .env); each attempt uses direct+proxy fallback (fetchWithFallback)
+ * but does NOT use the 30x fetch-retry loop to prevent duplicate charges.
+ *
+ * Retry policy: retry ONLY when there is no response or timeout.
+ * - code 1 = success → don't retry
+ * - any other JSON response = server replied (success or error) → don't retry
+ * - no response / timeout / network error → retry (request likely never reached server)
  */
 async function transfer(userId, userKey, pinCode, secretCodeOrGSM, toGSM, amount, fee, billcode, device) {
   const endpointKey = 'transfer';
@@ -386,13 +424,12 @@ async function transfer(userId, userKey, pinCode, secretCodeOrGSM, toGSM, amount
         secretCodeOrGSM,
         hash
       };
-      lastResult = await postCashForm('/ePayment/transfer', params, device);
-      // Stop immediately on success – do not retry; one successful payment only.
-      if (lastResult && (lastResult.code === '1' || lastResult.code === 1)) return lastResult;
-      console.log('[transfer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– code', lastResult?.code, lastResult?.message || '');
+      lastResult = await postCashFormOnce('/ePayment/transfer', params, device);
+      // Any JSON response = definitive reply (code 1 or not), don't retry
+      return lastResult;
     } catch (err) {
-      lastResult = { code: '-1', message: err.message || String(err) };
-      console.log('[transfer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– error', err.message || err);
+      lastResult = { code: '-1', message: err.message || String(err), uncertain: true };
+      console.log('[transfer] attempt', attempt, 'of', PAYMENT_RETRY_ATTEMPTS, '– no response/timeout, retrying:', err.message || err);
     }
   }
   return lastResult;

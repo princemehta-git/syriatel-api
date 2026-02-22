@@ -42,7 +42,7 @@ app.get('/', (req, res) => {
       'GET /balance?apiKey=...  (optional &gsm= for specific line)',
       'GET /history?apiKey=...&page=1  (optional &gsm= for specific line)',
       'GET /transaction?apiKey=...&transactionId=...  (optional &gsm=)',
-      'GET /transfer?apiKey=...&pin=...&to=...&amount=...  (optional &gsm=)',
+      'GET /transfer?apiKey=...&pin=...&to=...&amount=...  (optional &from=userId|gsm)',
       'GET /gsms?apiKey=...',
       'GET /accounts',
       'GET /checkGsm?gsm=...',
@@ -70,7 +70,7 @@ async function start() {
     try {
       const db = require('./src/db');
       await db.initDatabase();
-      console.log('Database ready (syriatel_api).');
+      console.log('Database ready (' + (process.env.MYSQL_DATABASE || 'syriatel_api') + ').');
     } catch (err) {
       console.error('Database init failed:', err.message);
       process.exit(1);

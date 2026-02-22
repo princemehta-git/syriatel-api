@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
+    "db:fix": "node scripts/db-fix.js",
     "verify-hashes": "node scripts/verify-all-hashes.js",
     "e2e": "node scripts/e2e-login.js"
   },
@@ -17,6 +18,7 @@
     "express": "^4.21.0",
     "mysql2": "^3.6.5",
     "node-fetch": "^2.7.0",
+    "sequelize": "^6.37.7",
     "socks-proxy-agent": "^8.0.5"
   }
 }

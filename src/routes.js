@@ -7,9 +7,46 @@ const syriatel = require('./syriatel');
 const store = require('./store');
 const { getDeviceForRequest } = require('./device');
 
+// --- Transfer deduplication ---
+// Prevents duplicate payments from concurrent requests or rapid-fire retries.
+
+/** Transfers currently being processed. Key = "userId:toGSM:amount" */
+const transfersInFlight = new Map();
+
+/**
+ * Recently completed transfers. Key = "userId:toGSM:amount", value = { result, ts }.
+ * Blocks identical transfers within DEDUP_WINDOW_MS of a successful one.
+ */
+const recentTransfers = new Map();
+const DEDUP_WINDOW_MS = parseInt(process.env.TRANSFER_DEDUP_WINDOW_MS, 10) || 30000;
+
+setInterval(() => {
+  const now = Date.now();
+  const toDelete = [];
+  for (const [key, entry] of recentTransfers) {
+    if (now - entry.ts > DEDUP_WINDOW_MS) toDelete.push(key);
+  }
+  toDelete.forEach(k => recentTransfers.delete(k));
+}, 10000);
+
 /** Wrap async route so fetch/network errors are passed to Express error handler instead of crashing the process. */
 function wrap(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
+}
+
+/** Ensure accountData is always an array. Handles: array, JSON string from DB, or single object. */
+function ensureAccountDataArray(accountData) {
+  if (Array.isArray(accountData)) return accountData;
+  if (typeof accountData === 'string') {
+    try {
+      const parsed = JSON.parse(accountData);
+      return Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? [parsed] : []);
+    } catch {
+      return [];
+    }
+  }
+  if (accountData && typeof accountData === 'object' && !Array.isArray(accountData)) return [accountData];
+  return [];
 }
 
 /**
@@ -17,12 +54,27 @@ function wrap(fn) {
  */
 function resolveUser(acc, gsm) {
   if (!gsm) return { userId: acc.userId, userKey: acc.userKey };
-  const entry = (acc.accountData || []).find(a => (a.gsm || '').toString() === gsm.toString());
+  const accountData = ensureAccountDataArray(acc.accountData);
+  const entry = accountData.find(a => (a.gsm || '').toString() === gsm.toString());
   if (!entry) return null;
   return {
     userId: entry.user_ID || entry.userId,
     userKey: entry.userKey || entry.user_KEY
   };
+}
+
+/**
+ * Resolve userId/userKey from 'from' param (userId or GSM). If empty, use account default.
+ */
+function resolveUserFrom(acc, from) {
+  const val = from != null ? String(from).trim() : '';
+  if (val === '') return { userId: acc.userId, userKey: acc.userKey };
+  const accountData = ensureAccountDataArray(acc.accountData);
+  const byGsm = accountData.find(a => (a.gsm || '').toString() === val);
+  if (byGsm) return { userId: byGsm.user_ID || byGsm.userId, userKey: byGsm.userKey || byGsm.user_KEY };
+  const byUserId = accountData.find(a => String(a.user_ID || a.userId) === val);
+  if (byUserId) return { userId: byUserId.user_ID || byUserId.userId, userKey: byUserId.userKey || byUserId.user_KEY };
+  return null;
 }
 
 async function getAccountOrFail(req, res) {
@@ -40,24 +92,75 @@ async function getAccountOrFail(req, res) {
 }
 
 /**
- * GET /signin?gsm=0986121503&password=xxx
+ * Parse isnew flag: true/1/yes => true, else false.
+ */
+function parseIsNew(val) {
+  if (val === undefined || val === null || val === '') return false;
+  const v = String(val).toLowerCase();
+  return v === 'true' || v === '1' || v === 'yes';
+}
+
+/**
+ * GET /signin?gsm=0986121503&password=xxx&isnew=0|1
  * Signs in; returns apiKey. Attach this apiKey to all later calls (balance, history, transfer, etc.).
  * If OTP required, returns needsOtp + apiKey; complete with GET /otp?apiKey=...&code=...
+ *
+ * isnew: 1/true = force new API key and re-register (default for new signin).
+ *       0/false/omit = if GSM already exists in DB, reuse existing apiKey, update userids/userkeys/gsms from Syriatel, do NOT create new record.
  */
 async function signin(req, res) {
   const gsm = req.query.gsm;
   const password = req.query.password;
+  const isNew = parseIsNew(req.query.isnew);
+
   if (!gsm || !password) {
     return res.status(400).json({ error: 'missing gsm or password' });
   }
-  const apiKey = store.generateApiKey();
-  const device = getDeviceForRequest(apiKey);
+
+  let apiKey;
+  let device;
+  let existing = null;
+
+  if (!isNew) {
+    existing = await store.getByGsm(gsm);
+    if (existing) {
+      apiKey = existing.apiKey;
+      device = existing.device || getDeviceForRequest(apiKey);
+    }
+  }
+
+  if (!apiKey) {
+    apiKey = store.generateApiKey();
+    device = getDeviceForRequest(apiKey);
+  }
 
   const result = await syriatel.signIn(gsm, password, device);
   const code = result.code;
   const data = result.data && result.data.data;
 
   if (code !== '1') {
+    if (existing && existing.password === password) {
+      let ad = existing.accountData;
+      if (!Array.isArray(ad)) {
+        try {
+          ad = typeof ad === 'string' ? JSON.parse(ad || '[]') : [];
+        } catch {
+          ad = [];
+        }
+      }
+      return res.status(200).json({
+        success: true,
+        apiKey: existing.apiKey,
+        accountId: existing.accountId,
+        userId: existing.userId,
+        gsms: (ad || []).map(a => ({
+          gsm: a.gsm,
+          user_ID: a.user_ID || a.userId,
+          userKey: a.userKey || a.user_KEY
+        })),
+        message: 'Using cached account (Syriatel temporarily unavailable)'
+      });
+    }
     return res.status(200).json({
       success: false,
       code: result.code,
@@ -77,7 +180,7 @@ async function signin(req, res) {
   }
 
   if (newDevice) {
-    await store.setPendingOtp(apiKey, { gsm, device });
+    await store.setPendingOtp(apiKey, { gsm, password, device });
     return res.status(200).json({
       success: true,
       needsOtp: true,
@@ -90,21 +193,31 @@ async function signin(req, res) {
   const first = accountData[0];
   const userKey = first.userKey || first.user_KEY;
   const userId = first.user_ID || first.userId;
+
   await store.set(apiKey, {
     gsm: first.gsm,
+    password,
     accountId,
     userId,
     userKey,
     accountData,
     device
   });
+
   syriatel.setToken(accountId, device, userKey).catch(() => {});
+
+  const gsmsPayload = accountData.map(a => ({
+    gsm: a.gsm,
+    user_ID: a.user_ID || a.userId,
+    userKey: a.userKey || a.user_KEY
+  }));
+
   return res.status(200).json({
     success: true,
     apiKey,
     accountId,
     userId,
-    gsms: accountData.map(a => ({ gsm: a.gsm, user_ID: a.user_ID, userKey: a.userKey || a.user_KEY }))
+    gsms: gsmsPayload
   });
 }
 
@@ -122,7 +235,7 @@ async function otp(req, res) {
   if (!pending) {
     return res.status(404).json({ error: 'pending OTP not found. Call /signin first.' });
   }
-  const { gsm, device } = pending;
+  const { gsm, password, device } = pending;
   const result = await syriatel.submitOtp(gsm, code, device);
   await store.deletePendingOtp(apiKey);
 
@@ -146,6 +259,7 @@ async function otp(req, res) {
   const userId = first.user_ID || first.userId;
   await store.set(apiKey, {
     gsm: first.gsm,
+    password: password || undefined,
     accountId,
     userId,
     userKey,
@@ -232,15 +346,18 @@ function directionToType(direction) {
 
 /**
  * GET /history?apiKey=xxx&page=1&direction=incoming
- * direction=incoming (default) or outgoing. Optional gsm=, status=, channelName=, sortType=, search=.
+ * direction=incoming (default) or outgoing. Optional for= (userId or GSM), gsm= (legacy), status=, channelName=, sortType=, search=.
  */
 async function history(req, res) {
   const acc = await getAccountOrFail(req, res);
   if (!acc) return;
+  const forParam = req.query.for;
   const gsm = req.query.gsm;
-  const user = resolveUser(acc, gsm);
+  const user = forParam != null && forParam !== ''
+    ? resolveUserFrom(acc, forParam)
+    : resolveUser(acc, gsm);
   if (!user) {
-    return res.status(400).json({ error: 'gsm not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
+    return res.status(400).json({ error: 'for (userId or GSM) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
   const pageNumber = req.query.page || req.query.pageNumber || '1';
   const direction = req.query.direction || 'incoming';
@@ -321,15 +438,19 @@ async function transaction(req, res) {
 
 /**
  * GET /transfer?apiKey=xxx&pin=0000&to=0990210184&amount=100
- * Optional gsm= to transfer from a specific line. to = GSM or secret code.
+ * Optional from= (userId or GSM) to transfer from a specific line; omit for main/default.
+ * Optional gsm= (legacy) same as from=gsm. to = GSM or secret code.
  */
 async function transfer(req, res) {
   const acc = await getAccountOrFail(req, res);
   if (!acc) return;
+  const from = req.query.from;
   const gsm = req.query.gsm;
-  const user = resolveUser(acc, gsm);
+  const user = from != null && from !== ''
+    ? resolveUserFrom(acc, from)
+    : resolveUser(acc, gsm);
   if (!user) {
-    return res.status(400).json({ error: 'gsm not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
+    return res.status(400).json({ error: 'from (userId or GSM) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
   const pin = req.query.pin || req.query.pinCode;
   const to = req.query.to;
@@ -342,61 +463,91 @@ async function transfer(req, res) {
     return res.status(400).json({ error: 'invalid amount' });
   }
 
-  const apiKeyShort = req.query.apiKey ? req.query.apiKey.slice(-8) : '?';
-  console.log('[Transfer] request', { to, amount: amountNum, userId: user.userId, gsm: gsm || 'default', apiKey: '...' + apiKeyShort });
+  const dedupeKey = `${user.userId}:${to}:${amountNum}`;
 
-  const check = await syriatel.checkCustomer(user.userId, user.userKey, to, String(amountNum), acc.device);
-  console.log('[Transfer] checkCustomer response', { code: check.code, message: check.message, data: check.data });
-  if (check.code !== '1' || !check.data || !check.data.data) {
-    console.log('[Transfer] checkCustomer failed – not calling transfer');
+  const recent = recentTransfers.get(dedupeKey);
+  if (recent && Date.now() - recent.ts < DEDUP_WINDOW_MS) {
+    console.log('[Transfer] blocked duplicate – identical transfer completed', Date.now() - recent.ts, 'ms ago');
     return res.status(200).json({
-      success: false,
-      code: check.code,
-      message: check.message || 'Check customer failed'
+      success: true,
+      duplicate: true,
+      message: recent.result.message || 'Transfer already completed (duplicate request blocked)'
     });
   }
-  const fee = parseFloat(check.data.data.feeAmount || check.data.data.fee || 0) || 0;
-  const billcode = check.data.data.billcode || check.data.data.billCode || '';
-  // Transfer API only accepts GSM; checkCustomer can accept code or GSM and returns customerGSM
-  const transferGSM = check.data.data.customerGSM || to;
-  console.log('[Transfer] checkCustomer ok', { fee, billcode, customerGSM: check.data.data.customerGSM, transferGSM });
 
-  const result = await syriatel.transfer(
-    user.userId,
-    user.userKey,
-    pin,
-    transferGSM,
-    transferGSM,
-    amountNum,
-    fee,
-    billcode,
-    acc.device
-  );
-  console.log('[Transfer] transfer API response', { code: result.code, message: result.message, data: result.data });
-  const transferSuccess = result && (result.code === '1' || result.code === 1);
-  if (!transferSuccess) {
+  if (transfersInFlight.has(dedupeKey)) {
+    console.log('[Transfer] blocked duplicate – identical transfer already in flight');
+    return res.status(409).json({
+      success: false,
+      message: 'An identical transfer is already in progress. Please wait for it to complete.'
+    });
+  }
+
+  transfersInFlight.set(dedupeKey, Date.now());
+
+  try {
+    const apiKeyShort = req.query.apiKey ? req.query.apiKey.slice(-8) : '?';
+    console.log('[Transfer] request', { to, amount: amountNum, userId: user.userId, from: from || gsm || 'default', apiKey: '...' + apiKeyShort });
+
+    const check = await syriatel.checkCustomer(user.userId, user.userKey, to, String(amountNum), acc.device);
+    console.log('[Transfer] checkCustomer response', { code: check.code, message: check.message, data: check.data });
+    if (check.code !== '1' || !check.data || !check.data.data) {
+      console.log('[Transfer] checkCustomer failed – not calling transfer');
+      return res.status(200).json({
+        success: false,
+        code: check.code,
+        message: check.message || 'Check customer failed'
+      });
+    }
+    const fee = parseFloat(check.data.data.feeAmount || check.data.data.fee || 0) || 0;
+    const billcode = check.data.data.billcode || check.data.data.billCode || '';
+    const transferGSM = check.data.data.customerGSM || to;
+    console.log('[Transfer] checkCustomer ok', { fee, billcode, customerGSM: check.data.data.customerGSM, transferGSM });
+
+    const result = await syriatel.transfer(
+      user.userId,
+      user.userKey,
+      pin,
+      transferGSM,
+      transferGSM,
+      amountNum,
+      fee,
+      billcode,
+      acc.device
+    );
+    console.log('[Transfer] transfer API response', { code: result.code, message: result.message, data: result.data });
+    const transferSuccess = result && (result.code === '1' || result.code === 1);
+    if (transferSuccess) {
+      recentTransfers.set(dedupeKey, { result, ts: Date.now() });
+      return res.status(200).json({
+        success: true,
+        message: result.message || 'Transfer done'
+      });
+    }
+
+    if (result && result.uncertain) {
+      recentTransfers.set(dedupeKey, { result, ts: Date.now() });
+      return res.status(200).json({
+        success: false,
+        uncertain: true,
+        code: result.code,
+        message: result.message
+      });
+    }
+
     console.log('[Transfer] transfer failed');
     return res.status(200).json({
       success: false,
       code: result?.code,
       message: result?.message
     });
+  } finally {
+    transfersInFlight.delete(dedupeKey);
   }
-  // Success: stop and reply immediately – no further payment attempts.
-  return res.status(200).json({
-    success: true,
-    message: result.message || 'Transfer done'
-  });
 }
 
-/**
- * GET /gsms?apiKey=xxx
- * List of GSMs (phone numbers) attached to this account.
- */
-async function gsms(req, res) {
-  const acc = await getAccountOrFail(req, res);
-  if (!acc) return;
-  const list = (acc.accountData || []).map(a => ({
+function mapAccountDataToGsms(accountData) {
+  return ensureAccountDataArray(accountData).map(a => ({
     gsm: a.gsm,
     user_ID: a.user_ID || a.userId,
     userKey: a.userKey || a.user_KEY,
@@ -404,6 +555,55 @@ async function gsms(req, res) {
     post_OR_PRE: a.post_OR_PRE,
     gsm_TARIFF_PROFILE: a.gsm_TARIFF_PROFILE
   }));
+}
+
+/**
+ * GET /gsms?apiKey=xxx
+ * List of GSMs (phone numbers) attached to this account.
+ * First tries to refresh from Syriatel via signin (using stored gsm+password); on failure, returns stored data.
+ */
+async function gsms(req, res) {
+  const acc = await getAccountOrFail(req, res);
+  if (!acc) return;
+
+  const gsm = acc.gsm;
+  const password = acc.password;
+  const device = acc.device;
+
+  if (gsm && password && device) {
+    try {
+      const result = await syriatel.signIn(gsm, password, device);
+      const code = result.code;
+      const data = result.data && result.data.data;
+
+      if (code === '1' && data && data.accountData && data.accountData.length && data.NEW_DEVICE !== '1') {
+        const accountData = data.accountData;
+        const first = accountData[0];
+        const userKey = first.userKey || first.user_KEY;
+        const userId = first.user_ID || first.userId;
+
+        await store.set(acc.apiKey, {
+          gsm: first.gsm,
+          password,
+          accountId: data.accountId,
+          userId,
+          userKey,
+          accountData,
+          device
+        });
+        syriatel.setToken(data.accountId, device, userKey).catch(() => {});
+
+        return res.status(200).json({
+          success: true,
+          gsms: mapAccountDataToGsms(accountData)
+        });
+      }
+    } catch (err) {
+      console.warn('[gsms] Signin refresh failed, using stored data:', err.message);
+    }
+  }
+
+  const list = mapAccountDataToGsms(acc.accountData);
   return res.status(200).json({
     success: true,
     gsms: list

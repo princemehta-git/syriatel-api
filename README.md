@@ -26,6 +26,12 @@ Call signin with your Syriatel GSM number and app password:
 GET /signin?gsm=0986121503&password=YourPassword
 ```
 
+Optional `isnew` flag:
+- `isnew=1` or `isnew=true`: Force a new API key and re-register (default when signing in for the first time).
+- `isnew=0` or `isnew=false` or omit: If the GSM already exists in the DB, reuse the existing `apiKey`, fetch fresh data from Syriatel, and update userids/userkeys/gsms without creating a new record.
+
+**Note:** The password is stored in the database (used for refreshing GSMs and other operations). Ensure the database is secured.
+
 **Success (no OTP):** Response includes `apiKey`. Use this `apiKey` for all later requests (balance, history, transfer, etc.).
 
 ```json
@@ -75,10 +81,12 @@ Every request after login must include the **apiKey** (as `apiKey`, `api_key`, o
 | What you want | Request |
 |---------------|---------|
 | Balance | `GET /balance?apiKey=YOUR_API_KEY` |
+| Balance for a specific line | `GET /balance?apiKey=YOUR_API_KEY&gsm=0986121503` |
 | History (page 1) | `GET /history?apiKey=YOUR_API_KEY&page=1` |
-| History for a specific GSM | `GET /history?apiKey=YOUR_API_KEY&gsm=0986121503&page=1` |
+| History for a specific line | `GET /history?apiKey=YOUR_API_KEY&for=0986121503&page=1` or `&gsm=0986121503` (legacy) |
 | Find transaction | `GET /transaction?apiKey=YOUR_API_KEY&transactionId=600402514192` |
-| Transfer | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100` |
+| Transfer (from main line) | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100` |
+| Transfer from specific line | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=0936174348` |
 | List GSMs on account | `GET /gsms?apiKey=YOUR_API_KEY` |
 | Usage / bundles | `GET /usage?apiKey=YOUR_API_KEY` |
 | Secret code (receive by code) | `GET /secretCode?apiKey=YOUR_API_KEY` |
@@ -89,10 +97,17 @@ Every request after login must include the **apiKey** (as `apiKey`, `api_key`, o
 GET http://localhost:3000/balance?apiKey=YOUR_API_KEY
 ```
 
-**Example (transfer):** `to` can be a GSM number or the recipient’s Syriatel Cash secret code. You need your 4‑digit Syriatel Cash PIN.
+**Example (transfer):** `to` can be a GSM number or the recipient’s Syriatel Cash secret code. You need your 4‑digit Syriatel Cash PIN. For accounts with multiple lines, use `from` (userId or GSM) to specify which line to transfer from.
 
 ```http
+# Transfer from main line (default)
 GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100
+
+# Transfer from a specific GSM
+GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=0936174348
+
+# Transfer from a specific userId
+GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=6036875
 ```
 
 ---
@@ -101,14 +116,14 @@ GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&am
 
 | Endpoint | Query params | Description |
 |----------|--------------|-------------|
-| **GET /signin** | `gsm`, `password` | Sign in. Returns `apiKey` and either linked account or `needsOtp: true` + `apiKey` for OTP step. |
+| **GET /signin** | `gsm`, `password`, optional `isnew` (0/1) | Sign in. Returns `apiKey` and either linked account or `needsOtp: true` + `apiKey` for OTP step. `isnew=1` forces new API key; `isnew=0` reuses existing if GSM exists. |
 | **GET /otp** | `apiKey`, `code` | Submit OTP after sign-in when `needsOtp` was true. Completes login and links account. |
 | **GET /resendOtp** | `apiKey` | Resend OTP for a pending sign-in (when `needsOtp` was true). |
 | **GET /balance** | `apiKey`, optional `gsm` | Balance. Use `gsm` for a specific line. |
-| **GET /history** | `apiKey`, optional `gsm`, `page`, `type`, `status`, … | History. Use `gsm` for a specific line. |
+| **GET /history** | `apiKey`, optional `for` (userId or GSM), optional `gsm` (legacy), `page`, `type`, `status`, … | History. Use `for` to specify which line (userId or GSM); omit for main. |
 | **GET /transaction** | `apiKey`, `transactionId`, optional `gsm` | Find transaction by ID. |
-| **GET /transfer** | `apiKey`, `pin`, `to`, `amount`, optional `gsm` | Transfer. |
-| **GET /gsms** | `apiKey` | List of GSMs (phone numbers) attached to this account. |
+| **GET /transfer** | `apiKey`, `pin`, `to`, `amount`, optional `from` (userId or GSM), optional `gsm` | Transfer. Use `from` to specify which line to transfer from (omit for main). |
+| **GET /gsms** | `apiKey` | List of GSMs. Refreshes from Syriatel via signin first (using stored password); falls back to stored data if refresh fails. |
 | **GET /accounts** | — | List all linked accounts (apiKey, gsm, accountId). |
 | **GET /checkGsm** | `gsm` | Check if GSM is registered (no login). Code: 1=register, -2=sign in, -3=verification. |
 | **GET /accountInfo** | `apiKey`, optional `gsm`, `firstUse` | Full account status. |
@@ -148,15 +163,20 @@ When the Syriatel API is unreachable directly (e.g. geo-restriction), the server
 |----------|-------------|---------|
 | **DIRECT_TIMEOUT_MS** | How long to wait for direct request (ms) before falling back to proxy. | `5000` |
 | **PROXY_ENABLED** | Set to `true`, `1`, or `yes` to enable proxy fallback. | `true` |
+| **FORCE_PROXY_ENABLED** | When `true`, skip direct and always use proxy. When `false`, try direct first, then proxy on failure (if PROXY_ENABLED). | `false` |
 | **PROXY_URL** | SOCKS5 proxy URL. | `socks5://127.0.0.1:1081` |
 
-**Behaviour:** Each API request tries a direct connection first (with the above timeout). If the direct request times out, fails with a network error, or is aborted, and **PROXY_ENABLED** is true, the same request (method, headers, body) is retried once via the SOCKS5 proxy. If the proxy also fails, the original (direct) error is thrown. The proxy is only used when the direct attempt fails; it is never used unnecessarily.
+**Behaviour:**
+- **FORCE_PROXY_ENABLED=true:** All requests go through the proxy only; direct connection is never attempted.
+- **FORCE_PROXY_ENABLED=false, PROXY_ENABLED=true:** Each request tries a direct connection first (with DIRECT_TIMEOUT_MS). If the direct request times out, fails with a network error, or is aborted, the same request is retried once via the SOCKS5 proxy. If the proxy also fails, the original (direct) error is thrown.
+- **Both false:** Direct connection only; no proxy fallback.
 
 **Example `.env`:**
 
 ```env
 DIRECT_TIMEOUT_MS=5000
 PROXY_ENABLED=true
+FORCE_PROXY_ENABLED=false
 PROXY_URL=socks5://127.0.0.1:1081
 ```
 
@@ -181,5 +201,6 @@ const data = await res.json();
 
 - **In-memory store:** With `USE_MEMORY=true`, linked accounts and pending OTP are kept in memory. Restart wipes them; for production, use MySQL (`USE_MEMORY=false`).
 - **GET-only:** All operations are GET with query parameters so they can be called from a browser or any HTTP client.
+- **Multi-line accounts:** Accounts can have multiple GSMs (lines). Use `gsm` for balance; `for` (userId or GSM) for history; `from` (userId or GSM) for transfer. All accept a GSM number or userId.
 - **PIN:** For `/transfer` you need the 4‑digit Syriatel Cash PIN set in the app. Pass it as `pin`.
 - **Network:** The Syriatel API may be geo-restricted. If you see connection errors (e.g. ECONNRESET), try another network, VPN, or enable **proxy fallback** (see above) with a SOCKS5 proxy.
