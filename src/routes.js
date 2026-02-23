@@ -501,15 +501,16 @@ async function transfer(req, res) {
     }
     const fee = parseFloat(check.data.data.feeAmount || check.data.data.fee || 0) || 0;
     const billcode = check.data.data.billcode || check.data.data.billCode || '';
-    const transferGSM = check.data.data.customerGSM || to;
-    console.log('[Transfer] checkCustomer ok', { fee, billcode, customerGSM: check.data.data.customerGSM, transferGSM });
+    // Use checkCustomer response's resolved recipient (customerCodeOrGSM or customerGSM) as toGSM for transfer
+    const toGSM = check.data.data.customerCodeOrGSM || check.data.data.customerGSM || to;
+    console.log('[Transfer] checkCustomer ok', { fee, billcode, customerCodeOrGSM: check.data.data.customerCodeOrGSM, customerGSM: check.data.data.customerGSM, toGSM });
 
     const result = await syriatel.transfer(
       user.userId,
       user.userKey,
       pin,
-      transferGSM,
-      transferGSM,
+      toGSM,
+      toGSM,
       amountNum,
       fee,
       billcode,
