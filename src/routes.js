@@ -64,7 +64,7 @@ function resolveUser(acc, gsm) {
 }
 
 /**
- * Resolve userId/userKey from 'from' param (userId or GSM). If empty, use account default.
+ * Resolve userId/userKey from 'from' or 'for' param (userId, GSM, or secret code). If empty, use account default.
  */
 function resolveUserFrom(acc, from) {
   const val = from != null ? String(from).trim() : '';
@@ -74,7 +74,37 @@ function resolveUserFrom(acc, from) {
   if (byGsm) return { userId: byGsm.user_ID || byGsm.userId, userKey: byGsm.userKey || byGsm.user_KEY };
   const byUserId = accountData.find(a => String(a.user_ID || a.userId) === val);
   if (byUserId) return { userId: byUserId.user_ID || byUserId.userId, userKey: byUserId.userKey || byUserId.user_KEY };
+  const bySecretCode = accountData.find(a => {
+    const code = a.secretCode != null ? String(a.secretCode) : (a.secret_code != null ? String(a.secret_code) : '');
+    return code === val;
+  });
+  if (bySecretCode) return { userId: bySecretCode.user_ID || bySecretCode.userId, userKey: bySecretCode.userKey || bySecretCode.user_KEY };
   return null;
+}
+
+/**
+ * Fetch secretCode for each line in accountData and attach to each entry. Returns new array (does not mutate).
+ */
+async function fetchSecretCodesForAccountData(accountData, device) {
+  const arr = ensureAccountDataArray(accountData);
+  const out = [];
+  for (const entry of arr) {
+    const userId = entry.user_ID || entry.userId;
+    const userKey = entry.userKey || entry.user_KEY;
+    let secretCode = entry.secretCode != null ? entry.secretCode : entry.secret_code;
+    try {
+      const result = await syriatel.secretCode(userId, userKey, device);
+      if (result.code === '1' && result.data) {
+        const data = result.data;
+        const code = (data.secretCode != null) ? data.secretCode : (data.data && (data.data.secretCode != null ? data.data.secretCode : data.data.secret_code));
+        if (code != null) secretCode = code;
+      }
+    } catch (err) {
+      console.warn('[secretCode] fetch failed for userId', userId, err.message);
+    }
+    out.push({ ...entry, secretCode });
+  }
+  return out;
 }
 
 async function getAccountOrFail(req, res) {
@@ -194,23 +224,21 @@ async function signin(req, res) {
   const userKey = first.userKey || first.user_KEY;
   const userId = first.user_ID || first.userId;
 
+  const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device);
+
   await store.set(apiKey, {
     gsm: first.gsm,
     password,
     accountId,
     userId,
     userKey,
-    accountData,
+    accountData: accountDataWithSecretCodes,
     device
   });
 
   syriatel.setToken(accountId, device, userKey).catch(() => {});
 
-  const gsmsPayload = accountData.map(a => ({
-    gsm: a.gsm,
-    user_ID: a.user_ID || a.userId,
-    userKey: a.userKey || a.user_KEY
-  }));
+  const gsmsPayload = mapAccountDataToGsms(accountDataWithSecretCodes);
 
   return res.status(200).json({
     success: true,
@@ -257,13 +285,14 @@ async function otp(req, res) {
   }
   const userKey = first.userKey || first.user_KEY;
   const userId = first.user_ID || first.userId;
+  const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device);
   await store.set(apiKey, {
     gsm: first.gsm,
     password: password || undefined,
     accountId,
     userId,
     userKey,
-    accountData,
+    accountData: accountDataWithSecretCodes,
     device
   });
   syriatel.setToken(accountId, device, userKey).catch(() => {});
@@ -272,7 +301,7 @@ async function otp(req, res) {
     apiKey,
     accountId,
     userId,
-    gsms: accountData.map(a => ({ gsm: a.gsm, user_ID: a.user_ID, userKey: a.userKey || a.user_KEY }))
+    gsms: mapAccountDataToGsms(accountDataWithSecretCodes)
   });
 }
 
@@ -346,7 +375,7 @@ function directionToType(direction) {
 
 /**
  * GET /history?apiKey=xxx&page=1&direction=incoming
- * direction=incoming (default) or outgoing. Optional for= (userId or GSM), gsm= (legacy), status=, channelName=, sortType=, search=.
+ * direction=incoming (default) or outgoing. Optional for= (userId, GSM, or secret code), gsm= (legacy), status=, channelName=, sortType=, search=.
  */
 async function history(req, res) {
   const acc = await getAccountOrFail(req, res);
@@ -357,7 +386,7 @@ async function history(req, res) {
     ? resolveUserFrom(acc, forParam)
     : resolveUser(acc, gsm);
   if (!user) {
-    return res.status(400).json({ error: 'for (userId or GSM) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
+    return res.status(400).json({ error: 'for (userId, GSM, or secret code) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
   const pageNumber = req.query.page || req.query.pageNumber || '1';
   const direction = req.query.direction || 'incoming';
@@ -393,15 +422,18 @@ async function history(req, res) {
 /**
  * GET /transaction?apiKey=xxx&transactionId=600402514192&direction=incoming
  * Optional direction=incoming (default) or outgoing to search in that history only; omit to search both.
- * Optional gsm= for a specific line.
+ * Optional for= (userId, GSM, or secret code) or gsm= (legacy) for a specific line.
  */
 async function transaction(req, res) {
   const acc = await getAccountOrFail(req, res);
   if (!acc) return;
+  const forParam = req.query.for;
   const gsm = req.query.gsm;
-  const user = resolveUser(acc, gsm);
+  const user = forParam != null && forParam !== ''
+    ? resolveUserFrom(acc, forParam)
+    : resolveUser(acc, gsm);
   if (!user) {
-    return res.status(400).json({ error: 'gsm not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
+    return res.status(400).json({ error: 'for (userId, GSM, or secret code) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
   const transactionId = req.query.transactionId || req.query.transactionNo;
   if (!transactionId) {
@@ -438,7 +470,7 @@ async function transaction(req, res) {
 
 /**
  * GET /transfer?apiKey=xxx&pin=0000&to=0990210184&amount=100
- * Optional from= (userId or GSM) to transfer from a specific line; omit for main/default.
+ * Optional from= (userId, GSM, or secret code) to transfer from a specific line; omit for main/default.
  * Optional gsm= (legacy) same as from=gsm. to = GSM or secret code.
  */
 async function transfer(req, res) {
@@ -450,7 +482,7 @@ async function transfer(req, res) {
     ? resolveUserFrom(acc, from)
     : resolveUser(acc, gsm);
   if (!user) {
-    return res.status(400).json({ error: 'from (userId or GSM) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
+    return res.status(400).json({ error: 'from (userId, GSM, or secret code) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
   const pin = req.query.pin || req.query.pinCode;
   const to = req.query.to;
@@ -554,7 +586,8 @@ function mapAccountDataToGsms(accountData) {
     userKey: a.userKey || a.user_KEY,
     account_ID: a.account_ID,
     post_OR_PRE: a.post_OR_PRE,
-    gsm_TARIFF_PROFILE: a.gsm_TARIFF_PROFILE
+    gsm_TARIFF_PROFILE: a.gsm_TARIFF_PROFILE,
+    secretCode: a.secretCode != null ? a.secretCode : a.secret_code
   }));
 }
 
@@ -583,20 +616,22 @@ async function gsms(req, res) {
         const userKey = first.userKey || first.user_KEY;
         const userId = first.user_ID || first.userId;
 
+        const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device);
+
         await store.set(acc.apiKey, {
           gsm: first.gsm,
           password,
           accountId: data.accountId,
           userId,
           userKey,
-          accountData,
+          accountData: accountDataWithSecretCodes,
           device
         });
         syriatel.setToken(data.accountId, device, userKey).catch(() => {});
 
         return res.status(200).json({
           success: true,
-          gsms: mapAccountDataToGsms(accountData)
+          gsms: mapAccountDataToGsms(accountDataWithSecretCodes)
         });
       }
     } catch (err) {
@@ -727,15 +762,18 @@ async function usage(req, res) {
 
 /**
  * GET /secretCode?apiKey=xxx
- * Optional gsm= for a specific line. Returns Syriatel Cash secret code (for receiving by code).
+ * Optional for= (gsm or userId) or gsm= (legacy) to get secret code for that line. Returns Syriatel Cash secret code (for receiving by code).
  */
 async function secretCodeRoute(req, res) {
   const acc = await getAccountOrFail(req, res);
   if (!acc) return;
+  const forParam = req.query.for;
   const gsm = req.query.gsm;
-  const user = resolveUser(acc, gsm);
+  const user = forParam != null && forParam !== ''
+    ? resolveUserFrom(acc, forParam)
+    : resolveUser(acc, gsm);
   if (!user) {
-    return res.status(400).json({ error: 'gsm not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
+    return res.status(400).json({ error: 'for (userId, GSM, or secret code) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
   const result = await syriatel.secretCode(user.userId, user.userKey, acc.device);
   if (result.code !== '1') {
@@ -745,9 +783,8 @@ async function secretCodeRoute(req, res) {
       message: result.message
     });
   }
-  const data = result.data && result.data.data;
-  const inner = data && data.data;
-  const code = inner && (inner.secretCode != null ? inner.secretCode : inner.secret_code);
+  const data = result.data;
+  const code = (data && data.secretCode != null) ? data.secretCode : (data && data.data && (data.data.secretCode != null ? data.data.secretCode : data.data.secret_code));
   return res.status(200).json({
     success: true,
     secretCode: code
