@@ -32,7 +32,7 @@ Optional `isnew` flag:
 
 **Note:** The password is stored in the database (used for refreshing GSMs and other operations). Ensure the database is secured.
 
-**Success (no OTP):** Response includes `apiKey`. Use this `apiKey` for all later requests (balance, history, transfer, etc.).
+**Success (no OTP):** Response includes `apiKey`. Use this `apiKey` for all later requests (balance, history, transfer, etc.). The server fetches a **secret code** for each line and stores it; the response lists each line with `gsm`, `user_ID`, `userKey`, and `secretCode`.
 
 ```json
 {
@@ -40,7 +40,10 @@ Optional `isnew` flag:
   "apiKey": "abc123...",
   "accountId": "4359406",
   "userId": "4359406",
-  "gsms": [{"gsm": "0986121503", "user_ID": "4359406", "userKey": "..."}]
+  "gsms": [
+    {"gsm": "0986121503", "user_ID": "4359406", "userKey": "...", "secretCode": "03363877"},
+    {"gsm": "0984143090", "user_ID": "5885941", "userKey": "...", "secretCode": "01234567"}
+  ]
 }
 ```
 
@@ -64,7 +67,7 @@ Use the same `apiKey` from the signin response and the code you received (SMS):
 GET /otp?apiKey=YOUR_API_KEY&code=123456
 ```
 
-Response is the same shape as signin (success + `apiKey`, `accountId`, `userId`, `gsms`). After this, use the same `apiKey` for balance, history, transfer, etc.
+Response is the same shape as signin (success + `apiKey`, `accountId`, `userId`, `gsms` with `secretCode` per line). After this, use the same `apiKey` for balance, history, transfer, etc.
 
 ### 3. Resend OTP
 
@@ -83,13 +86,14 @@ Every request after login must include the **apiKey** (as `apiKey`, `api_key`, o
 | Balance | `GET /balance?apiKey=YOUR_API_KEY` |
 | Balance for a specific line | `GET /balance?apiKey=YOUR_API_KEY&gsm=0986121503` |
 | History (page 1) | `GET /history?apiKey=YOUR_API_KEY&page=1` |
-| History for a specific line | `GET /history?apiKey=YOUR_API_KEY&for=0986121503&page=1` or `&gsm=0986121503` (legacy) |
+| History for a specific line | `GET /history?apiKey=YOUR_API_KEY&for=0986121503&page=1` or `&for=4359406` or `&for=03363877` (gsm, userId, or secret code); legacy `&gsm=0986121503` |
 | Find transaction | `GET /transaction?apiKey=YOUR_API_KEY&transactionId=600402514192` |
+| Find transaction for a line | `GET /transaction?apiKey=YOUR_API_KEY&transactionId=600402514192&for=0930622976` or `&for=5992318` (gsm or userId) |
 | Transfer (from main line) | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100` |
-| Transfer from specific line | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=0936174348` |
-| List GSMs on account | `GET /gsms?apiKey=YOUR_API_KEY` |
+| Transfer from specific line | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=0936174348` or `&from=6036875` or `&from=03363877` (gsm, userId, or secret code) |
+| List GSMs (with secret codes) | `GET /gsms?apiKey=YOUR_API_KEY` — refreshes from Syriatel and returns each line with `secretCode` |
 | Usage / bundles | `GET /usage?apiKey=YOUR_API_KEY` |
-| Secret code (receive by code) | `GET /secretCode?apiKey=YOUR_API_KEY` |
+| Secret code for a line | `GET /secretCode?apiKey=YOUR_API_KEY` (default line) or `&for=0986121503` or `&for=4359406` (gsm or userId) |
 
 **Example (balance):**
 
@@ -97,7 +101,7 @@ Every request after login must include the **apiKey** (as `apiKey`, `api_key`, o
 GET http://localhost:3000/balance?apiKey=YOUR_API_KEY
 ```
 
-**Example (transfer):** `to` can be a GSM number or the recipient’s Syriatel Cash secret code. You need your 4‑digit Syriatel Cash PIN. For accounts with multiple lines, use `from` (userId or GSM) to specify which line to transfer from.
+**Example (transfer):** `to` can be a GSM number or the recipient’s Syriatel Cash secret code. You need your 4‑digit Syriatel Cash PIN. For accounts with multiple lines, use `from` (userId, GSM, or secret code) to specify which line to transfer from.
 
 ```http
 # Transfer from main line (default)
@@ -108,6 +112,9 @@ GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&am
 
 # Transfer from a specific userId
 GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=6036875
+
+# Transfer from a line identified by its secret code
+GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=03363877
 ```
 
 ---
@@ -116,20 +123,20 @@ GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&am
 
 | Endpoint | Query params | Description |
 |----------|--------------|-------------|
-| **GET /signin** | `gsm`, `password`, optional `isnew` (0/1) | Sign in. Returns `apiKey` and either linked account or `needsOtp: true` + `apiKey` for OTP step. `isnew=1` forces new API key; `isnew=0` reuses existing if GSM exists. |
-| **GET /otp** | `apiKey`, `code` | Submit OTP after sign-in when `needsOtp` was true. Completes login and links account. |
+| **GET /signin** | `gsm`, `password`, optional `isnew` (0/1) | Sign in. Returns `apiKey` and either linked account (with `gsms` including `secretCode` per line) or `needsOtp: true` + `apiKey` for OTP step. `isnew=1` forces new API key; `isnew=0` reuses existing if GSM exists. |
+| **GET /otp** | `apiKey`, `code` | Submit OTP after sign-in when `needsOtp` was true. Completes login, fetches secret codes per line, and links account. |
 | **GET /resendOtp** | `apiKey` | Resend OTP for a pending sign-in (when `needsOtp` was true). |
 | **GET /balance** | `apiKey`, optional `gsm` | Balance. Use `gsm` for a specific line. |
-| **GET /history** | `apiKey`, optional `for` (userId or GSM), optional `gsm` (legacy), `page`, `type`, `status`, … | History. Use `for` to specify which line (userId or GSM); omit for main. |
-| **GET /transaction** | `apiKey`, `transactionId`, optional `gsm` | Find transaction by ID. |
-| **GET /transfer** | `apiKey`, `pin`, `to`, `amount`, optional `from` (userId or GSM), optional `gsm` | Transfer. Use `from` to specify which line to transfer from (omit for main). |
-| **GET /gsms** | `apiKey` | List of GSMs. Refreshes from Syriatel via signin first (using stored password); falls back to stored data if refresh fails. |
+| **GET /history** | `apiKey`, optional `for` (userId, GSM, or secret code), optional `gsm` (legacy), `page`, `type`, `status`, … | History. Use `for` to specify which line (userId, GSM, or secret code); omit for main. |
+| **GET /transaction** | `apiKey`, `transactionId`, optional `for` (userId, GSM, or secret code), optional `gsm` (legacy) | Find transaction by ID. Use `for` to search history for a specific line. |
+| **GET /transfer** | `apiKey`, `pin`, `to`, `amount`, optional `from` (userId, GSM, or secret code), optional `gsm` | Transfer. Use `from` to specify which line to transfer from (omit for main). `to` = GSM or recipient secret code. |
+| **GET /gsms** | `apiKey` | List of GSMs. Refreshes from Syriatel via sign-in, fetches secret codes for each line, and returns each line with `gsm`, `user_ID`, `userKey`, `secretCode`. Falls back to stored data if refresh fails. |
 | **GET /accounts** | — | List all linked accounts (apiKey, gsm, accountId). |
 | **GET /checkGsm** | `gsm` | Check if GSM is registered (no login). Code: 1=register, -2=sign in, -3=verification. |
 | **GET /accountInfo** | `apiKey`, optional `gsm`, `firstUse` | Full account status. |
 | **GET /historyTypes** | `apiKey`, optional `gsm` | History types. |
 | **GET /usage** | `apiKey`, optional `gsm` | Usage summary. |
-| **GET /secretCode** | `apiKey`, optional `gsm` | This account’s Syriatel Cash secret code (for receiving by code). |
+| **GET /secretCode** | `apiKey`, optional `for` (gsm or userId), optional `gsm` (legacy) | This account’s Syriatel Cash secret code for a line (for receiving by code). Omit `for`/`gsm` for default line; use `for=0986121503` or `for=4359406` for a specific line. |
 
 ---
 
@@ -201,6 +208,6 @@ const data = await res.json();
 
 - **In-memory store:** With `USE_MEMORY=true`, linked accounts and pending OTP are kept in memory. Restart wipes them; for production, use MySQL (`USE_MEMORY=false`).
 - **GET-only:** All operations are GET with query parameters so they can be called from a browser or any HTTP client.
-- **Multi-line accounts:** Accounts can have multiple GSMs (lines). Use `gsm` for balance; `for` (userId or GSM) for history; `from` (userId or GSM) for transfer. All accept a GSM number or userId.
+- **Multi-line accounts:** Accounts can have multiple GSMs (lines). Use `gsm` for balance; `for` (userId, GSM, or secret code) for history and transaction lookup; `from` (userId, GSM, or secret code) for transfer. Secret codes are fetched on sign-in and OTP and stored per line; `GET /gsms` refreshes from Syriatel and returns each line with its `secretCode`.
 - **PIN:** For `/transfer` you need the 4‑digit Syriatel Cash PIN set in the app. Pass it as `pin`.
 - **Network:** The Syriatel API may be geo-restricted. If you see connection errors (e.g. ECONNRESET), try another network, VPN, or enable **proxy fallback** (see above) with a SOCKS5 proxy.
