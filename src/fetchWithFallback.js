@@ -1,12 +1,20 @@
 /**
- * fetchWithFallback: try direct request first; on timeout/network/abort and
- * PROXY_ENABLED=true, retry the same request via SOCKS5 proxy.
- * FORCE_PROXY_ENABLED=true: skip direct, always use proxy.
- * Uses AbortController for configurable direct timeout.
+ * fetchWithFallback: unified timeout + retry for all Syriatel API requests.
+ *
+ * Three scenarios based on env config:
+ *   1. FORCE_PROXY_ENABLED: proxy only → retry FORCE_PROXY_RETRY_ATTEMPTS times
+ *   2. PROXY_ENABLED (not forced): direct first (DIRECT_RETRY_ATTEMPTS), then proxy fallback (PROXY_RETRY_ATTEMPTS)
+ *   3. Direct only: retry DIRECT_ONLY_RETRY_ATTEMPTS times
+ *
+ * ALL requests (direct and proxy) are subject to REQUEST_TIMEOUT_MS.
  * Node 18+: direct uses native fetch; proxy uses node-fetch + socks-proxy-agent.
+ *
+ * For non-idempotent operations (transfer), pass { singleAttempt: true } to skip
+ * internal retries (the caller handles its own retry loop with dedup safety).
  */
 
-const DIRECT_TIMEOUT_MS = Math.max(0, parseInt(process.env.DIRECT_TIMEOUT_MS, 10) || 5000);
+const REQUEST_TIMEOUT_MS = Math.max(1, parseInt(process.env.REQUEST_TIMEOUT_MS, 10) || 5000);
+
 const PROXY_ENABLED = process.env.PROXY_ENABLED === 'true' ||
   process.env.PROXY_ENABLED === '1' ||
   process.env.PROXY_ENABLED === 'yes';
@@ -14,6 +22,11 @@ const FORCE_PROXY_ENABLED = process.env.FORCE_PROXY_ENABLED === 'true' ||
   process.env.FORCE_PROXY_ENABLED === '1' ||
   process.env.FORCE_PROXY_ENABLED === 'yes';
 const PROXY_URL = process.env.PROXY_URL || '';
+
+const FORCE_PROXY_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.FORCE_PROXY_RETRY_ATTEMPTS, 10) || 3);
+const DIRECT_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.DIRECT_RETRY_ATTEMPTS, 10) || 2);
+const PROXY_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.PROXY_RETRY_ATTEMPTS, 10) || 2);
+const DIRECT_ONLY_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.DIRECT_ONLY_RETRY_ATTEMPTS, 10) || 30);
 
 let proxyAgent = null;
 let nodeFetch = null;
@@ -41,7 +54,7 @@ function getNodeFetch() {
   }
 }
 
-function isRetryableDirectError(err) {
+function isRetryableError(err) {
   if (!err) return false;
   const msg = (err.message || '').toLowerCase();
   const name = (err.name || '').toLowerCase();
@@ -49,80 +62,136 @@ function isRetryableDirectError(err) {
   if (msg.includes('timeout') || msg.includes('etimedout') || msg.includes('econnaborted')) return true;
   if (msg.includes('network') || msg.includes('econnrefused') || msg.includes('enotfound')) return true;
   if (msg.includes('fetch failed') || msg.includes('socket hang up')) return true;
-  if (err.cause && isRetryableDirectError(err.cause)) return true;
+  if (err.cause && isRetryableError(err.cause)) return true;
   return false;
 }
 
-/**
- * Build options for proxy request: same as original but no signal, plus agent.
- * Native fetch does not accept agent; proxy path uses node-fetch which does.
- */
-function proxyRequestOptions(originalOptions) {
-  const opts = { ...originalOptions };
-  delete opts.signal;
-  opts.agent = getProxyAgent();
-  return opts;
-}
-
-/**
- * Reusable helper: try direct fetch; on timeout/network/abort and PROXY_ENABLED,
- * retry same request via SOCKS5 proxy. Returns response. If proxy also fails, throws original error.
- * FORCE_PROXY_ENABLED=true: skip direct, always use proxy.
- *
- * @param {string} url - Request URL
- * @param {RequestInit & { agent?: unknown }} options - Same as fetch (method, headers, body, etc.)
- * @returns {Promise<Response>}
- */
-async function fetchWithFallback(url, options = {}) {
-  let directError;
-  let timeoutId;
-
-  // FORCE_PROXY_ENABLED: skip direct, use proxy only
-  if (FORCE_PROXY_ENABLED && PROXY_URL) {
-    const agent = getProxyAgent();
-    const fetchWithProxy = getNodeFetch();
-    if (!agent || !fetchWithProxy) {
-      throw new Error('FORCE_PROXY_ENABLED is true but proxy is not available (PROXY_URL or node-fetch/socks-proxy-agent missing)');
-    }
-    console.log('Force proxy enabled, using proxy directly...');
-    const proxyOpts = proxyRequestOptions(options);
-    return fetchWithProxy(url, proxyOpts);
-  }
-
-  // Direct first (when not force proxy)
-  console.log('Trying direct connection...');
+/** Direct fetch with AbortController timeout. */
+async function directFetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const controller = new AbortController();
-    timeoutId = setTimeout(() => controller.abort(), DIRECT_TIMEOUT_MS);
     const res = await fetch(url, { ...options, signal: controller.signal });
-    if (timeoutId) clearTimeout(timeoutId);
+    clearTimeout(timeoutId);
     return res;
   } catch (err) {
-    directError = err;
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-
-  // PROXY_ENABLED (and not force): fallback to proxy on direct failure
-  const shouldRetryWithProxy = PROXY_ENABLED && PROXY_URL && isRetryableDirectError(directError);
-  if (!shouldRetryWithProxy) {
-    throw directError;
-  }
-
-  const agent = getProxyAgent();
-  const fetchWithProxy = getNodeFetch();
-  if (!agent || !fetchWithProxy) {
-    throw directError;
-  }
-
-  console.log('Direct connection failed, switching to proxy...');
-  console.log('Using proxy:', process.env.PROXY_URL);
-  try {
-    const proxyOpts = proxyRequestOptions(options);
-    const res = await fetchWithProxy(url, proxyOpts);
-    return res;
-  } catch (proxyErr) {
-    throw directError;
+    clearTimeout(timeoutId);
+    throw err;
   }
 }
+
+/** Proxy fetch (node-fetch + socks-proxy-agent) with AbortController timeout. */
+async function proxyFetchWithTimeout(url, options, timeoutMs) {
+  const agent = getProxyAgent();
+  const fetchFn = getNodeFetch();
+  if (!agent || !fetchFn) {
+    throw new Error('Proxy not available (missing node-fetch or socks-proxy-agent, or PROXY_URL empty)');
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const proxyOpts = { ...options };
+  delete proxyOpts.signal;
+  proxyOpts.agent = agent;
+  proxyOpts.signal = controller.signal;
+  try {
+    const res = await fetchFn(url, proxyOpts);
+    clearTimeout(timeoutId);
+    return res;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
+
+/**
+ * Fetch with fallback + retry.
+ *
+ * @param {string} url
+ * @param {RequestInit} options
+ * @param {{ singleAttempt?: boolean, timeoutMs?: number }} [overrides]
+ *   singleAttempt: true → 1 attempt per phase (for non-idempotent ops like transfer)
+ *   timeoutMs: override REQUEST_TIMEOUT_MS for this call
+ */
+async function fetchWithFallback(url, options = {}, overrides = {}) {
+  const timeoutMs = overrides.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const singleAttempt = !!overrides.singleAttempt;
+
+  // --- Scenario 1: Force proxy ---
+  if (FORCE_PROXY_ENABLED && PROXY_URL) {
+    const max = singleAttempt ? 1 : FORCE_PROXY_RETRY_ATTEMPTS;
+    let lastError;
+    for (let i = 1; i <= max; i++) {
+      try {
+        console.log(`[fetch] proxy attempt ${i}/${max} (force-proxy) timeout=${timeoutMs}ms`);
+        return await proxyFetchWithTimeout(url, options, timeoutMs);
+      } catch (err) {
+        lastError = err;
+        console.error(`[fetch] proxy attempt ${i}/${max} failed:`, err.message);
+        if (!isRetryableError(err)) break;
+      }
+    }
+    throw lastError;
+  }
+
+  // --- Scenario 2: Direct first, then proxy fallback ---
+  if (PROXY_ENABLED && PROXY_URL) {
+    const directMax = singleAttempt ? 1 : DIRECT_RETRY_ATTEMPTS;
+    const proxyMax = singleAttempt ? 1 : PROXY_RETRY_ATTEMPTS;
+    let lastError;
+
+    for (let i = 1; i <= directMax; i++) {
+      try {
+        console.log(`[fetch] direct attempt ${i}/${directMax} (proxy-fallback) timeout=${timeoutMs}ms`);
+        return await directFetchWithTimeout(url, options, timeoutMs);
+      } catch (err) {
+        lastError = err;
+        console.error(`[fetch] direct attempt ${i}/${directMax} failed:`, err.message);
+        if (!isRetryableError(err)) break;
+      }
+    }
+
+    if (isRetryableError(lastError)) {
+      console.log('[fetch] all direct attempts failed, switching to proxy...');
+      for (let i = 1; i <= proxyMax; i++) {
+        try {
+          console.log(`[fetch] proxy attempt ${i}/${proxyMax} (fallback) timeout=${timeoutMs}ms`);
+          return await proxyFetchWithTimeout(url, options, timeoutMs);
+        } catch (err) {
+          lastError = err;
+          console.error(`[fetch] proxy attempt ${i}/${proxyMax} failed:`, err.message);
+          if (!isRetryableError(err)) break;
+        }
+      }
+    }
+
+    throw lastError;
+  }
+
+  // --- Scenario 3: Direct only ---
+  const max = singleAttempt ? 1 : DIRECT_ONLY_RETRY_ATTEMPTS;
+  let lastError;
+  for (let i = 1; i <= max; i++) {
+    try {
+      if (i === 1 || i % 5 === 0 || i === max) {
+        console.log(`[fetch] direct attempt ${i}/${max} (direct-only) timeout=${timeoutMs}ms`);
+      }
+      return await directFetchWithTimeout(url, options, timeoutMs);
+    } catch (err) {
+      lastError = err;
+      if (i === 1 || i % 5 === 0 || i === max) {
+        console.error(`[fetch] direct attempt ${i}/${max} failed:`, err.message);
+      }
+      if (!isRetryableError(err)) break;
+    }
+  }
+  throw lastError;
+}
+
+const activeScenario = FORCE_PROXY_ENABLED ? 'force-proxy' : PROXY_ENABLED ? 'proxy-fallback' : 'direct-only';
+console.log(`[fetchWithFallback] config: scenario=${activeScenario} timeout=${REQUEST_TIMEOUT_MS}ms` +
+  (activeScenario === 'force-proxy' ? ` retries=${FORCE_PROXY_RETRY_ATTEMPTS}` : '') +
+  (activeScenario === 'proxy-fallback' ? ` directRetries=${DIRECT_RETRY_ATTEMPTS} proxyRetries=${PROXY_RETRY_ATTEMPTS}` : '') +
+  (activeScenario === 'direct-only' ? ` retries=${DIRECT_ONLY_RETRY_ATTEMPTS}` : '') +
+  (PROXY_URL ? ` proxyUrl=${PROXY_URL}` : ''));
 
 module.exports = { fetchWithFallback };

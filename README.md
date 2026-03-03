@@ -162,45 +162,42 @@ Run `npm run verify-hashes` to confirm all hashes match the default/captured val
 
 ---
 
-## Proxy fallback (SOCKS5)
+## Timeout, retry & proxy fallback
 
-When the Syriatel API is unreachable directly (e.g. geo-restriction), the server can retry the same request via a SOCKS5 proxy. Configure in `.env`:
+Every request (direct and proxy) is subject to `REQUEST_TIMEOUT_MS` (default 5 000 ms). If no response arrives within that window the request is aborted and retried according to the active scenario. All values are configurable in `.env`.
 
-| Variable | Description | Example |
+| Variable | Description | Default |
 |----------|-------------|---------|
-| **DIRECT_TIMEOUT_MS** | How long to wait for direct request (ms) before falling back to proxy. | `5000` |
-| **PROXY_ENABLED** | Set to `true`, `1`, or `yes` to enable proxy fallback. | `true` |
-| **FORCE_PROXY_ENABLED** | When `true`, skip direct and always use proxy. When `false`, try direct first, then proxy on failure (if PROXY_ENABLED). | `false` |
-| **PROXY_URL** | SOCKS5 proxy URL. | `socks5://127.0.0.1:1081` |
+| **REQUEST_TIMEOUT_MS** | Timeout (ms) for every outbound request (direct and proxy). | `5000` |
+| **PROXY_ENABLED** | Enable proxy fallback (`true`/`1`/`yes`). | `false` |
+| **FORCE_PROXY_ENABLED** | Skip direct, always use proxy. | `false` |
+| **PROXY_URL** | SOCKS5 proxy URL. | `socks5h://127.0.0.1:1081` |
+| **FORCE_PROXY_RETRY_ATTEMPTS** | Retries when force-proxy is on (scenario 1). | `3` |
+| **DIRECT_RETRY_ATTEMPTS** | Direct-phase retries when proxy fallback is on (scenario 2). | `2` |
+| **PROXY_RETRY_ATTEMPTS** | Proxy-phase retries after direct fails (scenario 2). | `2` |
+| **DIRECT_ONLY_RETRY_ATTEMPTS** | Retries when proxy is off, direct only (scenario 3). | `30` |
+| **PAYMENT_RETRY_ATTEMPTS** | Outer retries for checkCustomer & transfer (1 network attempt each). | `5` |
 
-**Behaviour:**
-- **FORCE_PROXY_ENABLED=true:** All requests go through the proxy only; direct connection is never attempted.
-- **FORCE_PROXY_ENABLED=false, PROXY_ENABLED=true:** Each request tries a direct connection first (with DIRECT_TIMEOUT_MS). If the direct request times out, fails with a network error, or is aborted, the same request is retried once via the SOCKS5 proxy. If the proxy also fails, the original (direct) error is thrown.
-- **Both false:** Direct connection only; no proxy fallback.
+**Three scenarios:**
+
+1. **FORCE_PROXY_ENABLED=true** — proxy only. Each request retries up to `FORCE_PROXY_RETRY_ATTEMPTS` times, each with `REQUEST_TIMEOUT_MS` timeout.
+2. **PROXY_ENABLED=true, FORCE_PROXY=false** — direct first, then proxy fallback. Direct phase retries `DIRECT_RETRY_ATTEMPTS` times; if all fail with a retryable error, proxy phase retries `PROXY_RETRY_ATTEMPTS` times.
+3. **Both false** — direct only. Retries `DIRECT_ONLY_RETRY_ATTEMPTS` times.
+
+**Transfer safety:** Transfer requests use `singleAttempt` mode (1 attempt per phase, no internal retries) to avoid duplicate charges. The `transfer()` function manages its own outer retry loop (`PAYMENT_RETRY_ATTEMPTS`), and `routes.js` enforces deduplication via in-flight tracking and a configurable `TRANSFER_DEDUP_WINDOW_MS` window.
 
 **Example `.env`:**
 
 ```env
-DIRECT_TIMEOUT_MS=5000
+REQUEST_TIMEOUT_MS=5000
 PROXY_ENABLED=true
 FORCE_PROXY_ENABLED=false
-PROXY_URL=socks5://127.0.0.1:1081
+PROXY_URL=socks5h://127.0.0.1:1081
+DIRECT_RETRY_ATTEMPTS=2
+PROXY_RETRY_ATTEMPTS=2
 ```
 
-**Example usage of the helper (same options as `fetch`):**
-
-```js
-const { fetchWithFallback } = require('./src/fetchWithFallback');
-
-const res = await fetchWithFallback('https://cash-api.syriatel.sy/...', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ userId: '123', hash: '...' })
-});
-const data = await res.json();
-```
-
-**Dependencies for proxy:** `socks-proxy-agent`, `node-fetch` (used only for the proxy retry path; direct requests use Node’s native fetch on Node 18+).
+**Dependencies for proxy:** `socks-proxy-agent`, `node-fetch` (used only for the proxy path; direct requests use Node's native fetch on Node 18+).
 
 ---
 

@@ -79,42 +79,33 @@ function useHashRetry(endpointKey) {
 const BASE_FAPI = 'https://new-fapi.syriatel.sy/Wrapper/app/7/SS2MTLGSM';
 const BASE_CASH = 'https://cash-api.syriatel.sy/Wrapper/app/7/SS2MTLGSM';
 
-const MAX_RETRIES = 30;
-
 /** Max attempts for checkCustomer and transfer (retry with proxy until success or this many attempts). From .env PAYMENT_RETRY_ATTEMPTS. */
 const PAYMENT_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.PAYMENT_RETRY_ATTEMPTS, 10) || 5);
 
-function formatFetchError(err, url) {
-  const cause = err.cause ? (err.cause.message || String(err.cause)) : '';
-  const code = err.cause && err.cause.code ? err.cause.code : '';
-  return `fetch failed: ${err.message}${cause ? ' | cause: ' + cause : ''}${code ? ' [' + code + ']' : ''} | url: ${url}`;
-}
-
 /**
- * Fetch with retry: up to MAX_RETRIES on connection failure or server error (5xx).
- * Do not retry when a proper response is received (2xx, 4xx, or any response body).
+ * Fetch with retry: delegates to fetchWithFallback which handles timeout + retry
+ * per scenario (force-proxy / proxy-fallback / direct-only) internally.
+ * This wrapper only adds a 5xx retry (up to 3 attempts) on top.
  */
 async function fetchWithRetry(url, options) {
-  let lastError;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  const MAX_5XX_RETRIES = 3;
+  let last5xxRes;
+  for (let attempt = 1; attempt <= MAX_5XX_RETRIES; attempt++) {
     try {
       const res = await fetchWithFallback(url, options);
       if (res.status >= 500) {
-        lastError = new Error(`Server error ${res.status}`);
-        if (attempt < MAX_RETRIES) continue;
-        return res;
+        last5xxRes = res;
+        console.error(`[Syriatel fetch] 5xx (${res.status}) attempt ${attempt}/${MAX_5XX_RETRIES} | url: ${url}`);
+        if (attempt < MAX_5XX_RETRIES) continue;
+        return last5xxRes;
       }
       return res;
     } catch (err) {
-      lastError = err;
-      console.error('[Syriatel fetch]', formatFetchError(err, url), '| attempt', attempt, 'of', MAX_RETRIES);
-      if (attempt === MAX_RETRIES) {
-        console.error('[Syriatel fetch] Common causes: no internet, DNS failure, firewall/VPN, or Syriatel API unreachable (e.g. geo-restricted).');
-        throw lastError;
-      }
+      if (last5xxRes) return last5xxRes;
+      throw err;
     }
   }
-  throw lastError;
+  return last5xxRes;
 }
 
 function defaultHeaders(device) {
@@ -184,10 +175,10 @@ async function postCashForm(path, params, device) {
 }
 
 /**
- * POST form to cash-api WITHOUT the 30x fetch-retry loop.
- * Uses fetchWithFallback (direct + one proxy fallback) only.
+ * POST form to cash-api with singleAttempt (1 attempt per phase, no internal retries).
  * Must be used for non-idempotent payment operations (transfer) to avoid
- * duplicate charges when the server processes the request but the response is lost.
+ * duplicate charges. The caller (transfer()) handles its own retry loop with dedup.
+ * Timeout still applies so proxy calls won't hang forever.
  */
 async function postCashFormOnce(path, params, device) {
   const searchParams = new URLSearchParams(params).toString();
@@ -195,7 +186,7 @@ async function postCashFormOnce(path, params, device) {
     method: 'POST',
     headers: formHeaders(device),
     body: searchParams
-  });
+  }, { singleAttempt: true });
   return res.json();
 }
 
