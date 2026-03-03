@@ -175,13 +175,14 @@ Every request (direct and proxy) is subject to `REQUEST_TIMEOUT_MS` (default 5 0
 | **FORCE_PROXY_RETRY_ATTEMPTS** | Retries when force-proxy is on (scenario 1). | `3` |
 | **DIRECT_RETRY_ATTEMPTS** | Direct-phase retries when proxy fallback is on (scenario 2). | `2` |
 | **PROXY_RETRY_ATTEMPTS** | Proxy-phase retries after direct fails (scenario 2). | `2` |
+| **PROXY_FALLBACK_CYCLES** | How many full direct→proxy cycles to repeat (scenario 2). | `1` |
 | **DIRECT_ONLY_RETRY_ATTEMPTS** | Retries when proxy is off, direct only (scenario 3). | `30` |
 | **PAYMENT_RETRY_ATTEMPTS** | Outer retries for checkCustomer & transfer (1 network attempt each). | `5` |
 
 **Three scenarios:**
 
 1. **FORCE_PROXY_ENABLED=true** — proxy only. Each request retries up to `FORCE_PROXY_RETRY_ATTEMPTS` times, each with `REQUEST_TIMEOUT_MS` timeout.
-2. **PROXY_ENABLED=true, FORCE_PROXY=false** — direct first, then proxy fallback. Direct phase retries `DIRECT_RETRY_ATTEMPTS` times; if all fail with a retryable error, proxy phase retries `PROXY_RETRY_ATTEMPTS` times.
+2. **PROXY_ENABLED=true, FORCE_PROXY=false** — direct first, then proxy fallback. Direct phase retries `DIRECT_RETRY_ATTEMPTS` times; if all fail with a retryable error, proxy phase retries `PROXY_RETRY_ATTEMPTS` times. This full direct→proxy cycle repeats up to `PROXY_FALLBACK_CYCLES` times (default 1 = no looping).
 3. **Both false** — direct only. Retries `DIRECT_ONLY_RETRY_ATTEMPTS` times.
 
 **Transfer safety:** Transfer requests use `singleAttempt` mode (1 attempt per phase, no internal retries) to avoid duplicate charges. The `transfer()` function manages its own outer retry loop (`PAYMENT_RETRY_ATTEMPTS`), and `routes.js` enforces deduplication via in-flight tracking and a configurable `TRANSFER_DEDUP_WINDOW_MS` window.
@@ -195,6 +196,7 @@ FORCE_PROXY_ENABLED=false
 PROXY_URL=socks5h://127.0.0.1:1081
 DIRECT_RETRY_ATTEMPTS=2
 PROXY_RETRY_ATTEMPTS=2
+PROXY_FALLBACK_CYCLES=1
 ```
 
 **Dependencies for proxy:** `socks-proxy-agent`, `node-fetch` (used only for the proxy path; direct requests use Node's native fetch on Node 18+).

@@ -3,7 +3,7 @@
  *
  * Three scenarios based on env config:
  *   1. FORCE_PROXY_ENABLED: proxy only → retry FORCE_PROXY_RETRY_ATTEMPTS times
- *   2. PROXY_ENABLED (not forced): direct first (DIRECT_RETRY_ATTEMPTS), then proxy fallback (PROXY_RETRY_ATTEMPTS)
+ *   2. PROXY_ENABLED (not forced): direct (DIRECT_RETRY_ATTEMPTS) → proxy (PROXY_RETRY_ATTEMPTS), repeated PROXY_FALLBACK_CYCLES times
  *   3. Direct only: retry DIRECT_ONLY_RETRY_ATTEMPTS times
  *
  * ALL requests (direct and proxy) are subject to REQUEST_TIMEOUT_MS.
@@ -26,6 +26,7 @@ const PROXY_URL = process.env.PROXY_URL || '';
 const FORCE_PROXY_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.FORCE_PROXY_RETRY_ATTEMPTS, 10) || 3);
 const DIRECT_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.DIRECT_RETRY_ATTEMPTS, 10) || 2);
 const PROXY_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.PROXY_RETRY_ATTEMPTS, 10) || 2);
+const PROXY_FALLBACK_CYCLES = Math.max(1, parseInt(process.env.PROXY_FALLBACK_CYCLES, 10) || 1);
 const DIRECT_ONLY_RETRY_ATTEMPTS = Math.max(1, parseInt(process.env.DIRECT_ONLY_RETRY_ATTEMPTS, 10) || 30);
 
 let proxyAgent = null;
@@ -133,35 +134,44 @@ async function fetchWithFallback(url, options = {}, overrides = {}) {
     throw lastError;
   }
 
-  // --- Scenario 2: Direct first, then proxy fallback ---
+  // --- Scenario 2: Direct first, then proxy fallback (repeated for PROXY_FALLBACK_CYCLES) ---
   if (PROXY_ENABLED && PROXY_URL) {
+    const cycles = singleAttempt ? 1 : PROXY_FALLBACK_CYCLES;
     const directMax = singleAttempt ? 1 : DIRECT_RETRY_ATTEMPTS;
     const proxyMax = singleAttempt ? 1 : PROXY_RETRY_ATTEMPTS;
     let lastError;
 
-    for (let i = 1; i <= directMax; i++) {
-      try {
-        console.log(`[fetch] direct attempt ${i}/${directMax} (proxy-fallback) timeout=${timeoutMs}ms`);
-        return await directFetchWithTimeout(url, options, timeoutMs);
-      } catch (err) {
-        lastError = err;
-        console.error(`[fetch] direct attempt ${i}/${directMax} failed:`, err.message);
-        if (!isRetryableError(err)) break;
+    for (let cycle = 1; cycle <= cycles; cycle++) {
+      if (cycles > 1) {
+        console.log(`[fetch] cycle ${cycle}/${cycles} (proxy-fallback)`);
       }
-    }
 
-    if (isRetryableError(lastError)) {
-      console.log('[fetch] all direct attempts failed, switching to proxy...');
-      for (let i = 1; i <= proxyMax; i++) {
+      for (let i = 1; i <= directMax; i++) {
         try {
-          console.log(`[fetch] proxy attempt ${i}/${proxyMax} (fallback) timeout=${timeoutMs}ms`);
-          return await proxyFetchWithTimeout(url, options, timeoutMs);
+          console.log(`[fetch] direct attempt ${i}/${directMax} (cycle ${cycle}/${cycles}) timeout=${timeoutMs}ms`);
+          return await directFetchWithTimeout(url, options, timeoutMs);
         } catch (err) {
           lastError = err;
-          console.error(`[fetch] proxy attempt ${i}/${proxyMax} failed:`, err.message);
+          console.error(`[fetch] direct attempt ${i}/${directMax} (cycle ${cycle}/${cycles}) failed:`, err.message);
           if (!isRetryableError(err)) break;
         }
       }
+
+      if (!isRetryableError(lastError)) break;
+
+      console.log('[fetch] all direct attempts failed, switching to proxy...');
+      for (let i = 1; i <= proxyMax; i++) {
+        try {
+          console.log(`[fetch] proxy attempt ${i}/${proxyMax} (cycle ${cycle}/${cycles}) timeout=${timeoutMs}ms`);
+          return await proxyFetchWithTimeout(url, options, timeoutMs);
+        } catch (err) {
+          lastError = err;
+          console.error(`[fetch] proxy attempt ${i}/${proxyMax} (cycle ${cycle}/${cycles}) failed:`, err.message);
+          if (!isRetryableError(err)) break;
+        }
+      }
+
+      if (!isRetryableError(lastError)) break;
     }
 
     throw lastError;
@@ -190,7 +200,7 @@ async function fetchWithFallback(url, options = {}, overrides = {}) {
 const activeScenario = FORCE_PROXY_ENABLED ? 'force-proxy' : PROXY_ENABLED ? 'proxy-fallback' : 'direct-only';
 console.log(`[fetchWithFallback] config: scenario=${activeScenario} timeout=${REQUEST_TIMEOUT_MS}ms` +
   (activeScenario === 'force-proxy' ? ` retries=${FORCE_PROXY_RETRY_ATTEMPTS}` : '') +
-  (activeScenario === 'proxy-fallback' ? ` directRetries=${DIRECT_RETRY_ATTEMPTS} proxyRetries=${PROXY_RETRY_ATTEMPTS}` : '') +
+  (activeScenario === 'proxy-fallback' ? ` directRetries=${DIRECT_RETRY_ATTEMPTS} proxyRetries=${PROXY_RETRY_ATTEMPTS} cycles=${PROXY_FALLBACK_CYCLES}` : '') +
   (activeScenario === 'direct-only' ? ` retries=${DIRECT_ONLY_RETRY_ATTEMPTS}` : '') +
   (PROXY_URL ? ` proxyUrl=${PROXY_URL}` : ''));
 
