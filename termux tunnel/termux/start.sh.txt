@@ -1,0 +1,10 @@
+#!/data/data/com.termux/files/usr/bin/bash
+
+sleep 10
+
+export PATH="/data/data/com.termux/files/usr/bin:$PATH"
+export HOME="/data/data/com.termux/files/home"
+
+termux-wake-lock
+
+nohup bash ~/tunnel.sh >> ~/tunnel.log 2>&1 &

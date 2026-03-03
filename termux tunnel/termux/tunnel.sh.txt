@@ -1,0 +1,182 @@
+----------------------------worked on my moto-----------------------------
+
+#!/data/data/com.termux/files/usr/bin/bash
+
+# ============================
+# Production-grade Termux Tunnel Script
+# Self-healing, network-safe, reboot-safe
+# ============================
+
+SERVER="31.97.205.230"
+SERVER_USER="root"
+REMOTE_PORT="2222"
+LOCAL_PORT="8022"
+
+# Keep device awake
+termux-wake-lock
+
+# Ensure sshd running
+pgrep sshd >/dev/null || sshd
+
+while true
+do
+    echo "Checking network..."
+
+    # Wait until VPS reachable
+    ping -c 1 -W 3 $SERVER >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "Network unavailable. Retrying in 5 seconds..."
+        sleep 5
+        continue
+    fi
+
+    echo "Cleaning old sessions..."
+
+    # Kill local autossh safely
+    pkill -f "autossh.*${SERVER}.*${REMOTE_PORT}" 2>/dev/null
+
+    sleep 2
+
+    echo "Starting tunnel..."
+
+    autossh \
+        -4 \
+        -M 0 \
+        -N \
+        -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=3 \
+        -o TCPKeepAlive=yes \
+        -o ExitOnForwardFailure=yes \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=10 \
+        -R ${REMOTE_PORT}:localhost:${LOCAL_PORT} \
+        ${SERVER_USER}@${SERVER}
+
+    echo "Tunnel disconnected. Restarting in 5 seconds..."
+    sleep 5
+done
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-----------------------------------------------OR works on syrian guy 2nd last--------------------------------------
+
+
+#!/data/data/com.termux/files/usr/bin/bash
+
+SERVER="31.97.205.230"
+SERVER_USER="root"
+REMOTE_PORT="2222"
+LOCAL_PORT="8022"
+
+termux-wake-lock
+
+pgrep sshd >/dev/null || sshd
+
+while true
+do
+    echo "Checking network..."
+
+    ping -c 1 -W 3 $SERVER >/dev/null 2>&1
+
+    if [ $? -ne 0 ]; then
+        echo "Network unavailable. Retrying in 5 seconds..."
+        sleep 5
+        continue
+    fi
+
+    echo "Cleaning old sessions..."
+    pkill autossh 2>/dev/null
+
+    sleep 2
+
+    echo "Starting tunnel..."
+
+    autossh -4 -M 0 -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -R ${REMOTE_PORT}:localhost:${LOCAL_PORT} ${SERVER_USER}@${SERVER}
+
+    echo "Tunnel disconnected. Restarting in 5 seconds..."
+    sleep 5
+done
+
+
+
+
+
+
+
+
+
+------------------------------------OR latest------------------------------
+
+#!/data/data/com.termux/files/usr/bin/bash
+
+# ============================
+# Production-grade Termux Tunnel Script
+# Self-healing, network-safe, reboot-safe
+# Single instance, quieter retries, longer backoff to avoid port 2222 conflict on VPS
+# ============================
+
+SERVER="31.97.205.230"
+SERVER_USER="root"
+REMOTE_PORT="2222"
+LOCAL_PORT="8022"
+LOCKFILE="$HOME/.tunnel.sh.lock"
+
+# Single instance: if another tunnel.sh is already running, exit
+if [ -f "$LOCKFILE" ]; then
+    OLD_PID=$(cat "$LOCKFILE" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "Tunnel already running (PID $OLD_PID). Exit."
+        exit 0
+    fi
+    rm -f "$LOCKFILE"
+fi
+echo $$ > "$LOCKFILE"
+trap 'rm -f "$LOCKFILE"; exit' EXIT
+
+# Keep device awake
+termux-wake-lock
+
+# Ensure sshd running
+pgrep sshd >/dev/null || sshd
+
+RETRY_SLEEP=30
+
+while true
+do
+    # Wait until VPS reachable
+    ping -c 1 -W 3 $SERVER >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "[$(date +%H:%M)] No network. Retry in ${RETRY_SLEEP}s."
+        sleep $RETRY_SLEEP
+        continue
+    fi
+
+    # Kill local autossh safely so only one tunnel uses 2222 on VPS
+    pkill -f "autossh.*${SERVER}.*${REMOTE_PORT}" 2>/dev/null
+    sleep 3
+
+    # Single-line autossh to avoid CRLF/continuation issues
+    autossh -4 -M 0 -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o TCPKeepAlive=yes -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -R ${REMOTE_PORT}:localhost:${LOCAL_PORT} ${SERVER_USER}@${SERVER}
+
+    echo "[$(date +%H:%M)] Tunnel down. Restart in ${RETRY_SLEEP}s."
+    sleep $RETRY_SLEEP
+done
