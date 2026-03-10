@@ -84,7 +84,7 @@ Every request after login must include the **apiKey** (as `apiKey`, `api_key`, o
 | What you want | Request |
 |---------------|---------|
 | Balance | `GET /balance?apiKey=YOUR_API_KEY` |
-| Balance for a specific line | `GET /balance?apiKey=YOUR_API_KEY&gsm=0986121503` |
+| Balance for a specific line | `GET /balance?apiKey=YOUR_API_KEY&gsm=0986121503` or `&for=0986121503` or `&for=4359406` or `&for=03363877` (gsm, userId, or secret code); legacy `&gsm=0986121503` |
 | History (page 1) | `GET /history?apiKey=YOUR_API_KEY&page=1` |
 | History for a specific line | `GET /history?apiKey=YOUR_API_KEY&for=0986121503&page=1` or `&for=4359406` or `&for=03363877` (gsm, userId, or secret code); legacy `&gsm=0986121503` |
 | Find transaction | `GET /transaction?apiKey=YOUR_API_KEY&transactionId=600402514192` |

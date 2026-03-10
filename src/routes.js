@@ -329,19 +329,22 @@ async function resendOtp(req, res) {
 
 /**
  * GET /balance?apiKey=xxx
- * Optional gsm= to get balance for a specific line (when account has multiple GSMs).
+ * Optional gsm= or for= to get balance for a specific line. for= accepts userId, GSM, or secret code; gsm= (legacy) accepts GSM only.
  */
 async function balance(req, res) {
   const acc = await getAccountOrFail(req, res);
   if (!acc) return;
+  const forParam = req.query.for;
   const gsm = req.query.gsm;
-  const user = resolveUser(acc, gsm);
+  const user = forParam != null && forParam !== ''
+    ? resolveUserFrom(acc, forParam)
+    : resolveUser(acc, gsm);
   if (!user) {
-    return res.status(400).json({ error: 'gsm not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
+    return res.status(400).json({ error: 'for (userId, GSM, or secret code) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
   // Log everything we have before calling Syriatel (get balance)
   console.log('[Balance] GET /balance – request details:', {
-    query: { apiKey: req.query.apiKey ? '(present)' : undefined, gsm: req.query.gsm },
+    query: { apiKey: req.query.apiKey ? '(present)' : undefined, gsm: req.query.gsm, for: req.query.for },
     resolvedUser: { userId: user.userId, userKey: user.userKey ? '(present)' : '(missing)' },
     device: acc.device,
     payloadToSyriatel: {
