@@ -227,7 +227,7 @@ async function signin(req, res) {
   const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device);
 
   await store.set(apiKey, {
-    gsm: first.gsm,
+    gsm,
     password,
     accountId,
     userId,
@@ -287,7 +287,7 @@ async function otp(req, res) {
   const userId = first.user_ID || first.userId;
   const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device);
   await store.set(apiKey, {
-    gsm: first.gsm,
+    gsm,
     password: password || undefined,
     accountId,
     userId,
@@ -622,7 +622,7 @@ async function gsms(req, res) {
         const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device);
 
         await store.set(acc.apiKey, {
-          gsm: first.gsm,
+          gsm: acc.gsm,
           password,
           accountId: data.accountId,
           userId,
