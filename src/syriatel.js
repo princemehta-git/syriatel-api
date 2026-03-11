@@ -212,8 +212,9 @@ async function checkGSM(gsm, device) {
  * Sign in with GSM and password.
  * Returns { code, message, data } and data.data may contain accountId, NEW_DEVICE, accountData.
  * If NEW_DEVICE === '1' or code indicates OTP required, caller should use submitOtp.
+ * opts.logForGsms: when true, logs full request/response (for GET /gsms debug).
  */
-async function signIn(gsm, password, device) {
+async function signIn(gsm, password, device, opts = {}) {
   const privateKey = '0';
   // APK m12583o5 uses h2: [privateKey, gsm, salt, password, "1"]
   const hash = await getHash('h2', privateKey, [gsm, password, '1'], device, 'SIGN_IN3');
@@ -229,7 +230,21 @@ async function signIn(gsm, password, device) {
     osType: '1',
     hash
   };
-  return postFapi('/features/authentication/SIGN_IN3', body, device);
+  const path = '/features/authentication/SIGN_IN3';
+  const url = `${BASE_FAPI}${path}`;
+  if (opts.logForGsms) {
+    console.log('[gsms] STEP signIn REQUEST:', JSON.stringify({
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'User-Agent': getUserAgent(device), 'Accept-Encoding': 'gzip' },
+      body
+    }, null, 2));
+  }
+  const result = await postFapi(path, body, device);
+  if (opts.logForGsms) {
+    console.log('[gsms] STEP signIn RESPONSE:', JSON.stringify(result, null, 2));
+  }
+  return result;
 }
 
 /**
@@ -472,8 +487,9 @@ async function customerHistory(userId, userKey, device, opts = {}) {
 /**
  * Get secret code for this account (receiving by code).
  * APK: h2 [userKey, userId, salt].
+ * opts.logForGsms: when true, logs full request/response (for GET /gsms debug).
  */
-async function secretCode(userId, userKey, device) {
+async function secretCode(userId, userKey, device, opts = {}) {
   const hash = await getHash('h2', userKey, [userId], device, 'secretCode');
   const params = {
     ...device,
@@ -483,7 +499,22 @@ async function secretCode(userId, userKey, device) {
   const keys = ['appVersion', 'mobileManufaturer', 'mobileModel', 'lang', 'systemVersion', 'deviceId', 'userId', 'hash'];
   const obj = {};
   keys.forEach(k => { obj[k] = params[k]; });
-  return postCashForm('/ePayment/secretCode', obj, device);
+  const path = '/ePayment/secretCode';
+  const url = `${BASE_CASH}${path}`;
+  if (opts.logForGsms) {
+    console.log('[gsms] STEP secretCode REQUEST:', JSON.stringify({
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'User-Agent': getUserAgent(device), 'Accept-Encoding': 'gzip' },
+      body: obj,
+      bodyFormEncoded: new URLSearchParams(obj).toString()
+    }, null, 2));
+  }
+  const result = await postCashForm(path, obj, device);
+  if (opts.logForGsms) {
+    console.log('[gsms] STEP secretCode RESPONSE:', JSON.stringify(result, null, 2));
+  }
+  return result;
 }
 
 /**
@@ -503,10 +534,12 @@ async function getHistoryTypes(userId, userKey, device) {
 /**
  * Register FCM/push token for the account (notification/setToken). APK m12575n5 uses e2 [userKey, accountId, token, "2", salt].
  * userKey = first/current GSM's userKey from login. When userKey is missing, falls back to captured hash (same device).
+ * opts.logForGsms: when true, logs full request/response (for GET /gsms debug).
  */
-async function setToken(accountId, device, userKey, token = CAPTURED_SETTOKEN_TOKEN) {
+async function setToken(accountId, device, userKey, token, opts = {}) {
+  const tokenToUse = token !== undefined && token !== null ? token : CAPTURED_SETTOKEN_TOKEN;
   const hash = userKey
-    ? await getHash('e2', userKey, [String(accountId), token, '2'], device, 'setToken')
+    ? await getHash('e2', userKey, [String(accountId), tokenToUse, '2'], device, 'setToken')
     : await getHash('h2', '0', [String(accountId)], device, 'setToken');
   const systemVersionSetToken = (device.systemVersion || 'Android+v15').replace('Android+', 'Android');
   const params = {
@@ -519,9 +552,24 @@ async function setToken(accountId, device, userKey, token = CAPTURED_SETTOKEN_TO
     systemVersion: systemVersionSetToken,
     deviceId: device.deviceId,
     hash,
-    token
+    token: tokenToUse
   };
-  return postFapiForm('/notification/setToken', params, device);
+  const path = '/notification/setToken';
+  const url = `${BASE_FAPI}${path}`;
+  if (opts.logForGsms) {
+    console.log('[gsms] STEP setToken REQUEST:', JSON.stringify({
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'User-Agent': getUserAgent(device), 'Accept-Encoding': 'gzip' },
+      body: params,
+      bodyFormEncoded: new URLSearchParams(params).toString()
+    }, null, 2));
+  }
+  const result = await postFapiForm(path, params, device);
+  if (opts.logForGsms) {
+    console.log('[gsms] STEP setToken RESPONSE:', JSON.stringify(result, null, 2));
+  }
+  return result;
 }
 
 module.exports = {

@@ -84,16 +84,21 @@ function resolveUserFrom(acc, from) {
 
 /**
  * Fetch secretCode for each line in accountData and attach to each entry. Returns new array (does not mutate).
+ * opts.logForGsms: when true, logs each secretCode request/response (for GET /gsms debug).
  */
-async function fetchSecretCodesForAccountData(accountData, device) {
+async function fetchSecretCodesForAccountData(accountData, device, opts = {}) {
   const arr = ensureAccountDataArray(accountData);
   const out = [];
-  for (const entry of arr) {
+  for (let i = 0; i < arr.length; i++) {
+    const entry = arr[i];
     const userId = entry.user_ID || entry.userId;
     const userKey = entry.userKey || entry.user_KEY;
     let secretCode = entry.secretCode != null ? entry.secretCode : entry.secret_code;
+    if (opts.logForGsms) {
+      console.log(`[gsms] STEP secretCode (line ${i + 1}/${arr.length}) for gsm=${entry.gsm} userId=${userId}`);
+    }
     try {
-      const result = await syriatel.secretCode(userId, userKey, device);
+      const result = await syriatel.secretCode(userId, userKey, device, opts);
       if (result.code === '1' && result.data) {
         const data = result.data;
         const code = (data.secretCode != null) ? data.secretCode : (data.data && (data.data.secretCode != null ? data.data.secretCode : data.data.secret_code));
@@ -607,9 +612,23 @@ async function gsms(req, res) {
   const password = acc.password;
   const device = acc.device;
 
+  const logForGsms = { logForGsms: true };
+  console.log('[gsms] Fetched from DB:', JSON.stringify({
+    apiKey: acc.apiKey,
+    gsm,
+    password,
+    accountId: acc.accountId,
+    userId: acc.userId,
+    device
+  }, null, 2));
+
+  if (!gsm || !password || !device) {
+    console.log('[gsms] Skipping refresh: missing gsm, password, or device. gsm=%s, hasPassword=%s, hasDevice=%s', !!gsm, !!password, !!device);
+  }
+
   if (gsm && password && device) {
     try {
-      const result = await syriatel.signIn(gsm, password, device);
+      const result = await syriatel.signIn(gsm, password, device, logForGsms);
       const code = result.code;
       const data = result.data && result.data.data;
 
@@ -619,7 +638,8 @@ async function gsms(req, res) {
         const userKey = first.userKey || first.user_KEY;
         const userId = first.user_ID || first.userId;
 
-        const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device);
+        console.log('[gsms] signIn success, fetching secretCodes for', accountData.length, 'line(s)');
+        const accountDataWithSecretCodes = await fetchSecretCodesForAccountData(accountData, device, logForGsms);
 
         await store.set(acc.apiKey, {
           gsm: acc.gsm,
@@ -630,12 +650,23 @@ async function gsms(req, res) {
           accountData: accountDataWithSecretCodes,
           device
         });
-        syriatel.setToken(data.accountId, device, userKey).catch(() => {});
+        console.log('[gsms] Calling setToken');
+        syriatel.setToken(data.accountId, device, userKey, undefined, logForGsms).catch((err) => {
+          console.warn('[gsms] setToken failed (non-fatal):', err.message);
+        });
 
+        const gsmsPayload = mapAccountDataToGsms(accountDataWithSecretCodes);
+        console.log('[gsms] SUCCESS (refreshed), returning gsms:', JSON.stringify(gsmsPayload, null, 2));
         return res.status(200).json({
           success: true,
-          gsms: mapAccountDataToGsms(accountDataWithSecretCodes)
+          gsms: gsmsPayload
         });
+      }
+      if (code !== '1' || !data || !data.accountData || !data.accountData.length) {
+        console.log('[gsms] signIn returned non-success or no accountData, using stored data. code=%s', code);
+      }
+      if (data && data.NEW_DEVICE === '1') {
+        console.log('[gsms] NEW_DEVICE=1, using stored data');
       }
     } catch (err) {
       console.warn('[gsms] Signin refresh failed, using stored data:', err.message);
@@ -643,6 +674,7 @@ async function gsms(req, res) {
   }
 
   const list = mapAccountDataToGsms(acc.accountData);
+  console.log('[gsms] FALLBACK (using stored accountData), returning gsms:', JSON.stringify(list, null, 2));
   return res.status(200).json({
     success: true,
     gsms: list
