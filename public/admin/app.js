@@ -551,8 +551,8 @@ async function doSignin() {
     const isnew = document.getElementById('add-isnew').checked ? '1' : '0';
     const res = await fetch('/signin?gsm=' + encodeURIComponent(gsm) + '&password=' + encodeURIComponent(password) + '&isnew=' + isnew);
     const data = await res.json();
-    if (data.error) {
-      errEl.textContent = data.error;
+    if (!data.success) {
+      errEl.textContent = data.message || data.error || 'Sign in failed';
       return;
     }
     pendingApiKey = data.apiKey;
@@ -582,8 +582,8 @@ async function doSubmitOtp() {
   try {
     const res = await fetch('/otp?apiKey=' + pendingApiKey + '&code=' + encodeURIComponent(code));
     const data = await res.json();
-    if (data.error) {
-      errEl.textContent = data.error;
+    if (!data.success) {
+      errEl.textContent = data.message || data.error || 'Sign in failed';
       return;
     }
     await saveNewAccountMeta();
