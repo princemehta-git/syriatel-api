@@ -150,18 +150,45 @@ function renderAccounts() {
   `).join('');
 }
 
+function showCopiedTooltip(e) {
+  const tip = document.createElement('div');
+  tip.className = 'copied-tooltip';
+  tip.textContent = 'Copied!';
+  const x = (e && (e.clientX ?? e.changedTouches?.[0]?.clientX)) ?? window.innerWidth / 2;
+  const y = (e && (e.clientY ?? e.changedTouches?.[0]?.clientY)) ?? window.innerHeight / 2;
+  tip.style.left = Math.min(Math.max(x - 40, 10), window.innerWidth - 90) + 'px';
+  tip.style.top = Math.min(y - 36, window.innerHeight - 50) + 'px';
+  document.body.appendChild(tip);
+  setTimeout(() => tip.remove(), 1200);
+}
+
 function copyText(text, e) {
-  navigator.clipboard.writeText(text).then(() => {
-    const tip = document.createElement('div');
-    tip.className = 'copied-tooltip';
-    tip.textContent = 'Copied!';
-    const x = (e && (e.clientX ?? e.changedTouches?.[0]?.clientX)) ?? window.innerWidth / 2;
-    const y = (e && (e.clientY ?? e.changedTouches?.[0]?.clientY)) ?? window.innerHeight / 2;
-    tip.style.left = Math.min(Math.max(x - 40, 10), window.innerWidth - 90) + 'px';
-    tip.style.top = Math.min(y - 36, window.innerHeight - 50) + 'px';
-    document.body.appendChild(tip);
-    setTimeout(() => tip.remove(), 1200);
-  });
+  const done = () => showCopiedTooltip(e);
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+
+function fallbackCopy(text, onSuccess) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  ta.style.top = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  try {
+    const ok = document.execCommand('copy');
+    if (ok) onSuccess();
+  } catch (err) {
+    console.warn('Copy failed:', err);
+  } finally {
+    document.body.removeChild(ta);
+  }
 }
 
 async function editAccount(apiKey, currentName, currentPin) {
