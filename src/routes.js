@@ -492,7 +492,7 @@ async function transfer(req, res) {
   if (!user) {
     return res.status(400).json({ error: 'from (userId, GSM, or secret code) not found in this account. Use GET /gsms?apiKey=... to list GSMs.' });
   }
-  const pin = req.query.pin || req.query.pinCode;
+  const pin = req.query.pin || req.query.pinCode || acc.pin;
   const to = req.query.to;
   const amount = req.query.amount;
   if (!pin || !to || !amount) {
@@ -601,12 +601,20 @@ function mapAccountDataToGsms(accountData) {
 
 /**
  * GET /gsms?apiKey=xxx
+ * Optional: dbOnly=1 returns stored data only (no sign-in refresh). Omit for full refresh from Syriatel.
  * List of GSMs (phone numbers) attached to this account.
- * First tries to refresh from Syriatel via signin (using stored gsm+password); on failure, returns stored data.
+ * Without dbOnly: first tries to refresh from Syriatel via signin (using stored gsm+password); on failure, returns stored data.
  */
 async function gsms(req, res) {
   const acc = await getAccountOrFail(req, res);
   if (!acc) return;
+
+  const dbOnly = req.query.dbOnly === '1' || req.query.dbOnly === 'true';
+  if (dbOnly) {
+    const list = mapAccountDataToGsms(acc.accountData);
+    console.log('[gsms] DB-only request, returning stored gsms:', list.length);
+    return res.status(200).json({ success: true, gsms: list });
+  }
 
   const gsm = acc.gsm;
   const password = acc.password;

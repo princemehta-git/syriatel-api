@@ -48,7 +48,9 @@ async function get(apiKey) {
     userKey: row.userKey,
     accountData: row.accountData,
     device: ensureDeviceObject(row.device),
-    linkedAt: row.linkedAt
+    linkedAt: row.linkedAt,
+    name: row.name || null,
+    pin: row.pin || null
   };
 }
 
@@ -100,14 +102,17 @@ async function getByGsm(gsm) {
     userKey: row.userKey,
     accountData: row.accountData,
     device: ensureDeviceObject(row.device),
-    linkedAt: row.linkedAt
+    linkedAt: row.linkedAt,
+    name: row.name || null,
+    pin: row.pin || null
   };
 }
 
 async function set(apiKey, data) {
   const linkedAt = data.linkedAt || new Date().toISOString();
   if (USE_MEMORY) {
-    accounts.set(apiKey, {
+    const existing = accounts.get(apiKey) || {};
+    const entry = {
       gsm: data.gsm,
       password: data.password,
       accountId: data.accountId,
@@ -115,11 +120,14 @@ async function set(apiKey, data) {
       userKey: data.userKey,
       accountData: data.accountData,
       device: data.device,
-      linkedAt
-    });
+      linkedAt,
+      name: data.name !== undefined ? data.name : (existing.name || null),
+      pin: data.pin !== undefined ? data.pin : (existing.pin || null)
+    };
+    accounts.set(apiKey, entry);
     return data;
   }
-  await getDb().setAccount(apiKey, {
+  const dbData = {
     gsm: data.gsm,
     password: data.password,
     accountId: data.accountId,
@@ -128,7 +136,10 @@ async function set(apiKey, data) {
     accountData: data.accountData,
     device: data.device,
     linkedAt
-  });
+  };
+  if (data.name !== undefined) dbData.name = data.name;
+  if (data.pin !== undefined) dbData.pin = data.pin;
+  await getDb().setAccount(apiKey, dbData);
   return data;
 }
 
@@ -144,9 +155,12 @@ async function list() {
     return Array.from(accounts.entries()).map(([apiKey, row]) => ({
       apiKey,
       gsm: row.gsm,
+      password: row.password || null,
       accountId: row.accountId,
       userId: row.userId,
-      linkedAt: row.linkedAt
+      linkedAt: row.linkedAt,
+      name: row.name || null,
+      pin: row.pin || null
     }));
   }
   return getDb().listAccounts();

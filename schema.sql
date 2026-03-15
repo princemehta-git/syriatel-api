@@ -11,6 +11,9 @@ USE syriatel_api;
 CREATE TABLE IF NOT EXISTS accounts (
   api_key VARCHAR(64) NOT NULL PRIMARY KEY,
   gsm VARCHAR(24) NOT NULL,
+  password VARCHAR(255) NULL,
+  name VARCHAR(255) NULL COMMENT 'Optional friendly name for this account',
+  pin VARCHAR(32) NULL COMMENT 'Default PIN for transfers (plain text)',
   account_id VARCHAR(32) NOT NULL,
   user_id VARCHAR(32) NOT NULL,
   user_key VARCHAR(128) NOT NULL,
@@ -25,6 +28,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS pending_otp (
   api_key VARCHAR(64) NOT NULL PRIMARY KEY,
   gsm VARCHAR(24) NOT NULL,
+  password VARCHAR(255) NULL,
   device JSON NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

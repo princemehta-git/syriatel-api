@@ -120,6 +120,16 @@ async function runMigrations() {
   } catch (e) {
     if (!isDuplicateColumn(e)) throw e;
   }
+  try {
+    await sequelize.query('ALTER TABLE `accounts` ADD COLUMN `name` VARCHAR(255) NULL');
+  } catch (e) {
+    if (!isDuplicateColumn(e)) throw e;
+  }
+  try {
+    await sequelize.query('ALTER TABLE `accounts` ADD COLUMN `pin` VARCHAR(32) NULL');
+  } catch (e) {
+    if (!isDuplicateColumn(e)) throw e;
+  }
 }
 
 module.exports = {

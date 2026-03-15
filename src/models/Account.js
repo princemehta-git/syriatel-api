@@ -35,6 +35,16 @@ module.exports = (sequelize) => {
       type: DataTypes.JSON,
       allowNull: false
     },
+    name: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      defaultValue: null
+    },
+    pin: {
+      type: DataTypes.STRING(32),
+      allowNull: true,
+      defaultValue: null
+    },
     device: {
       type: DataTypes.JSON,
       allowNull: false

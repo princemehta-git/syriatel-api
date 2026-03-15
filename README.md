@@ -91,7 +91,7 @@ Every request after login must include the **apiKey** (as `apiKey`, `api_key`, o
 | Find transaction for a line | `GET /transaction?apiKey=YOUR_API_KEY&transactionId=600402514192&for=0930622976` or `&for=5992318` (gsm or userId) |
 | Transfer (from main line) | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100` |
 | Transfer from specific line | `GET /transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&amount=100&from=0936174348` or `&from=6036875` or `&from=03363877` (gsm, userId, or secret code) |
-| List GSMs (with secret codes) | `GET /gsms?apiKey=YOUR_API_KEY` — refreshes from Syriatel and returns each line with `secretCode` |
+| List GSMs (with secret codes) | `GET /gsms?apiKey=YOUR_API_KEY` — refreshes from Syriatel and returns each line with `secretCode`. Add `&dbOnly=1` to return stored data only (no sign-in refresh). |
 | Usage / bundles | `GET /usage?apiKey=YOUR_API_KEY` |
 | Secret code for a line | `GET /secretCode?apiKey=YOUR_API_KEY` (default line) or `&for=0986121503` or `&for=4359406` (gsm or userId) |
 
@@ -130,7 +130,7 @@ GET http://localhost:3000/transfer?apiKey=YOUR_API_KEY&pin=0000&to=0990210184&am
 | **GET /history** | `apiKey`, optional `for` (userId, GSM, or secret code), optional `gsm` (legacy), `page`, `type`, `status`, … | History. Use `for` to specify which line (userId, GSM, or secret code); omit for main. |
 | **GET /transaction** | `apiKey`, `transactionId`, optional `for` (userId, GSM, or secret code), optional `gsm` (legacy) | Find transaction by ID. Use `for` to search history for a specific line. |
 | **GET /transfer** | `apiKey`, `pin`, `to`, `amount`, optional `from` (userId, GSM, or secret code), optional `gsm` | Transfer. Use `from` to specify which line to transfer from (omit for main). `to` = GSM or recipient secret code. |
-| **GET /gsms** | `apiKey` | List of GSMs. Refreshes from Syriatel via sign-in, fetches secret codes for each line, and returns each line with `gsm`, `user_ID`, `userKey`, `secretCode`. Falls back to stored data if refresh fails. |
+| **GET /gsms** | `apiKey`, optional `dbOnly` (1/true) | List of GSMs. Without `dbOnly`: refreshes from Syriatel via sign-in, fetches secret codes for each line, and returns each line with `gsm`, `user_ID`, `userKey`, `secretCode`; falls back to stored data if refresh fails. With `dbOnly=1` or `dbOnly=true`: returns stored data only (no sign-in, instant response). |
 | **GET /accounts** | — | List all linked accounts (apiKey, gsm, accountId). |
 | **GET /checkGsm** | `gsm` | Check if GSM is registered (no login). Code: 1=register, -2=sign in, -3=verification. |
 | **GET /accountInfo** | `apiKey`, optional `gsm`, `firstUse` | Full account status. |
@@ -207,6 +207,6 @@ PROXY_FALLBACK_CYCLES=1
 
 - **In-memory store:** With `USE_MEMORY=true`, linked accounts and pending OTP are kept in memory. Restart wipes them; for production, use MySQL (`USE_MEMORY=false`).
 - **GET-only:** All operations are GET with query parameters so they can be called from a browser or any HTTP client.
-- **Multi-line accounts:** Accounts can have multiple GSMs (lines). Use `gsm` for balance; `for` (userId, GSM, or secret code) for history and transaction lookup; `from` (userId, GSM, or secret code) for transfer. Secret codes are fetched on sign-in and OTP and stored per line; `GET /gsms` refreshes from Syriatel and returns each line with its `secretCode`.
+- **Multi-line accounts:** Accounts can have multiple GSMs (lines). Use `gsm` for balance; `for` (userId, GSM, or secret code) for history and transaction lookup; `from` (userId, GSM, or secret code) for transfer. Secret codes are fetched on sign-in and OTP and stored per line; `GET /gsms` refreshes from Syriatel and returns each line with its `secretCode`. Use `GET /gsms?apiKey=...&dbOnly=1` for instant DB-only response (no sign-in).
 - **PIN:** For `/transfer` you need the 4‑digit Syriatel Cash PIN set in the app. Pass it as `pin`.
 - **Network:** The Syriatel API may be geo-restricted. If you see connection errors (e.g. ECONNRESET), try another network, VPN, or enable **proxy fallback** (see above) with a SOCKS5 proxy.

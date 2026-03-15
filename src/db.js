@@ -32,7 +32,9 @@ async function getAccount(apiKey) {
     userKey: r.user_key,
     accountData: typeof r.account_data === 'string' ? JSON.parse(r.account_data) : r.account_data,
     device: typeof r.device === 'string' ? JSON.parse(r.device) : r.device,
-    linkedAt: r.linked_at
+    linkedAt: r.linked_at,
+    name: r.name || null,
+    pin: r.pin || null
   };
 }
 
@@ -62,6 +64,12 @@ async function setAccount(apiKey, data) {
   };
   if (data.password != null && data.password !== '') {
     upsertData.password = data.password;
+  }
+  if (data.name !== undefined) {
+    upsertData.name = data.name;
+  }
+  if (data.pin !== undefined) {
+    upsertData.pin = data.pin;
   }
 
   await Account.upsert(upsertData);
@@ -109,7 +117,9 @@ async function getAccountByGsm(gsm) {
       userKey: r.user_key,
       accountData: typeof r.account_data === 'string' ? JSON.parse(r.account_data) : r.account_data,
       device: typeof r.device === 'string' ? JSON.parse(r.device) : r.device,
-      linkedAt: r.linked_at
+      linkedAt: r.linked_at,
+      name: r.name || null,
+      pin: r.pin || null
     };
   }
   // Fallback: search in accountData JSON (any gsm in linked lines)
@@ -132,7 +142,9 @@ async function getAccountByGsm(gsm) {
         userKey: r.user_key,
         accountData: typeof r.account_data === 'string' ? JSON.parse(r.account_data) : r.account_data,
         device: typeof r.device === 'string' ? JSON.parse(r.device) : r.device,
-        linkedAt: r.linked_at
+        linkedAt: r.linked_at,
+        name: r.name || null,
+        pin: r.pin || null
       };
     }
   }
@@ -151,7 +163,9 @@ async function getAccountByGsm(gsm) {
         userKey: r.user_key,
         accountData: ad,
         device: typeof r.device === 'string' ? JSON.parse(r.device) : r.device,
-        linkedAt: r.linked_at
+        linkedAt: r.linked_at,
+        name: r.name || null,
+        pin: r.pin || null
       };
     }
     if (ad.some(a => variants.includes(String(a.gsm || '').trim()))) {
@@ -164,7 +178,9 @@ async function getAccountByGsm(gsm) {
         userKey: r.user_key,
         accountData: ad,
         device: typeof r.device === 'string' ? JSON.parse(r.device) : r.device,
-        linkedAt: r.linked_at
+        linkedAt: r.linked_at,
+        name: r.name || null,
+        pin: r.pin || null
       };
     }
   }
@@ -173,15 +189,18 @@ async function getAccountByGsm(gsm) {
 
 async function listAccounts() {
   const rows = await Account.findAll({
-    attributes: ['api_key', 'gsm', 'account_id', 'user_id', 'linked_at'],
+    attributes: ['api_key', 'gsm', 'password', 'account_id', 'user_id', 'linked_at', 'name', 'pin'],
     order: [['linked_at', 'DESC']]
   });
   return rows.map(r => ({
     apiKey: r.api_key,
     gsm: r.gsm,
+    password: r.password || null,
     accountId: r.account_id,
     userId: r.user_id,
-    linkedAt: r.linked_at
+    linkedAt: r.linked_at,
+    name: r.name || null,
+    pin: r.pin || null
   }));
 }
 

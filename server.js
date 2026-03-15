@@ -7,7 +7,9 @@
 require('dotenv').config();
 
 const express = require('express');
+const path = require('path');
 const routes = require('./src/routes');
+const adminRoutes = require('./src/adminRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -53,6 +55,10 @@ app.get('/secretCode', routes.secretCode);
 //     ]
 //   });
 // });
+
+// Admin panel
+app.use('/admin', express.static(path.join(__dirname, 'public', 'admin')));
+app.use('/admin/api', adminRoutes);
 
 app.use((err, req, res, next) => {
   const isNetwork = err && (err.message === 'fetch failed' || (err.cause && (err.cause.code === 'ECONNRESET' || err.cause.code === 'ETIMEDOUT' || err.cause.code === 'ENOTFOUND')));
